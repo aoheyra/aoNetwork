@@ -15,6 +15,7 @@ Instructions for AI coding agents and human contributors. Read this fully before
 - **No band-aids over races.** A flaky test is a bug in the code or the test. Fix the ordering, ownership or determinism problem (e.g. seed, paused clock, explicit event ordering).
 - **If a proper fix is out of scope or blocked**, stop. Write down what you found, open or link an issue, and ask. Do not ship a hack "for now". If a temporary measure is unavoidable it needs: a `TODO(NET-xx)` with the issue ID, a stated removal condition, and explicit maintainer approval in the PR.
 - **Fix the class of bug, not the instance.** After fixing, ask where else the same flaw can occur (other length fields, other state transitions) and cover those with tests.
+- **Only for comments or docs. Do not add duplicate docs or comments. Be concise, accurate and include what's absolutely necessary only.**
 - **Do not paper over a design problem in another crate.** Report it against the owning crate (see section 3).
 
 ### 1.2 Pick the best option, and show why
@@ -25,6 +26,7 @@ For any non-trivial choice (algorithm, data structure, dependency, API shape):
 2. Compare on: correctness, security, simplicity, memory and battery cost on a phone, determinism and testability, long-term maintenance.
 3. Choose, and record the reasoning in the PR description (or an ADR in `docs/` if it changes a contract).
 4. Prefer boring, proven, well-maintained solutions. Prefer `std` and what is already a dependency.
+5. Do not add table of other options. Just briefly tell the user what pros and cons for other. Do not at all include a table or reference to other choices anywhere in codebase.
 
 **New dependencies** need: licence accepted by `cargo-deny`, active maintenance, no known advisories, MSRV compatibility, reasonable size, and a one-line justification in the PR. Do not add a dependency to save ten lines.
 
