@@ -1,0 +1,46 @@
+# cargo-deny configuration (NET-01). Run with `cargo deny check`.
+#
+# Gates every dependency for known advisories, acceptable licences, banned
+# duplicates/wildcards and unexpected sources. Adding a dependency that fails
+# here means changing this file in its own reviewed PR (AGENTS.md §6).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+# Never add an ignore without the issue ID that justifies it (AGENTS.md §1.1).
+ignore = []
+
+[licenses]
+version = 2
+# Accept only well-known permissive licences; new dependencies must fit or
+# this list changes in its own reviewed PR (AGENTS.md §6).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+
+# The workspace crate itself has no licence until APP-01 (README); it is
+# marked `publish = false`, so skip it rather than pretend it is licensed.
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

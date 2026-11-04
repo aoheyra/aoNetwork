@@ -1,1 +1,5 @@
 /target
+# Library crate: Cargo.lock is not committed (AGENTS.md §7 forbids
+# generated files). CI resolves dependencies fresh, and the edition-2024
+# resolver is MSRV-aware, so the MSRV job still gets compatible versions.
+/Cargo.lock

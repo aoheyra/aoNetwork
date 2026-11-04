@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: pre-alpha, M0 (Foundations).** The repo is currently a `cargo new` skeleton. Everything below describes the design in the backlog (issue IDs `NET-xx`); nothing here is implemented until its issue is closed. See [Roadmap](#roadmap).
+> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI) is implemented; everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -145,7 +145,7 @@ while let Some(ev) = events.recv().await {
 
 ## Development
 
-Requires Rust 1.85+ (edition 2024; the exact MSRV is pinned in NET-01).
+Requires Rust 1.85+ (edition 2024; the MSRV is pinned as `rust-version` in `Cargo.toml` and enforced by CI).
 
 ```bash
 cargo fmt --all -- --check
@@ -161,7 +161,7 @@ cargo run --example sim_chat
 cargo +nightly fuzz run frame_decode
 ```
 
-CI runs the same commands, plus a seeded simulator suite (< 2 min) on every PR and a longer nightly run.
+CI runs these commands on every PR and on `master`: fmt, clippy (`-D warnings`), tests (Linux, macOS, Windows; default and all features), `cargo doc` (`-D warnings`), cargo-deny, an MSRV build, miri and `cargo package`. A seeded simulator suite (< 2 min) and a longer nightly run arrive with NET-09.
 
 ### Using sibling crates locally
 
@@ -187,7 +187,7 @@ Full scope and "Done when" lines for every issue are in the project backlog. Iss
 3. One issue per PR, with tests that demonstrate the "Done when" line.
 4. CI must be green without loosened lints, skipped tests or weakened checks.
 
-Security issues: do not open a public issue for a vulnerability; contact the maintainers privately (add a `SECURITY.md` contact in NET-01).
+Security issues: do not open a public issue for a vulnerability; report them privately as described in [`SECURITY.md`](SECURITY.md).
 
 ## License
 
