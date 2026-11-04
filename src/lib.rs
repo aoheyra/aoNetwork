@@ -30,7 +30,30 @@
 //! | `sim` | yes | in-memory `SimWorld` transport (NET-09) |
 //! | `native` | no | `NativeTransport` adapter for the Kotlin BLE shim (NET-14) |
 //!
+//! # Example
+//!
+//! ```
+//! use ao_network::NetworkConfig;
+//!
+//! // Configurations are validated at construction: every `with_*` setter
+//! // returns a typed error instead of accepting an invalid value.
+//! let config = NetworkConfig::default()
+//!     .with_max_links(3)?
+//!     .with_min_rssi(-80)?;
+//! assert_eq!(config.max_links(), 3);
+//! assert_eq!(config.min_rssi(), -80);
+//! # Ok::<(), ao_network::ConfigError>(())
+//! ```
+//!
 //! The full design lives in the repository `README.md`; the layer diagram,
 //! channel table and defaults are documented there.
 
 #![deny(missing_docs)]
+
+mod config;
+mod error;
+mod types;
+
+pub use config::NetworkConfig;
+pub use error::{ConfigError, DisconnectReason, NetError, SendError};
+pub use types::{Channel, LinkId, LinkRole, LocalTag, PeerKey};
