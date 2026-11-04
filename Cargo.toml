@@ -1,6 +1,28 @@
 [package]
-name = "aoNetwork"
+name = "ao_network"
 version = "0.1.0"
 edition = "2024"
+# MSRV: edition 2024 requires Rust 1.85+. Bump deliberately, never silently.
+rust-version = "1.85"
+description = "BLE link layer of the aoheyra mesh: frames, fragmentation, send queue, link state, topology and abuse protection (sans-IO)"
+repository = "https://github.com/aoheyra/aoNetwork"
+readme = "README.md"
+keywords = ["bluetooth", "ble", "mesh", "networking"]
+categories = ["network-programming"]
+# No `license` field until APP-01 decides for all four repos (see README),
+# so the crate is not publishable yet; cargo-deny skips it via
+# `[licenses.private]` for the same reason. Revisit both in NET-27.
+publish = false
 
 [dependencies]
+# Typed error enums (NetError, SendError, ConfigError). MIT/Apache-2.0,
+# actively maintained, MSRV well below ours. Hand-rolling Display for the
+# many error variants this crate will grow (NET-04..18) is pure boilerplate.
+thiserror = "2"
+
+[features]
+default = ["sim"]
+# In-memory SimWorld transport (NET-09); used as a dev-dependency downstream.
+sim = []
+# NativeTransport adapter for the Kotlin BLE shim (NET-14). No UniFFI here.
+native = []
