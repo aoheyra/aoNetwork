@@ -26,3 +26,6 @@ default = ["sim"]
 sim = []
 # NativeTransport adapter for the Kotlin BLE shim (NET-14). No UniFFI here.
 native = []
+
+[dev-dependencies]
+proptest = "1.5"
