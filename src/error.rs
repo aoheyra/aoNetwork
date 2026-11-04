@@ -73,6 +73,37 @@ pub enum ConfigError {
     },
 }
 
+/// A beacon payload failed structural validation.
+///
+/// These errors describe untrusted discovery data, not an authenticated peer.
+/// They contain only the rejected length or header, never the hint or digest.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum BeaconError {
+    /// The input is not exactly one fixed-size beacon payload.
+    #[error("invalid beacon length: expected {expected} bytes, got {actual}")]
+    InvalidLength {
+        /// Required payload length for this codec.
+        expected: usize,
+        /// Received payload length.
+        actual: usize,
+    },
+
+    /// The sender uses a version this codec does not understand.
+    #[error("unsupported beacon version: {version}")]
+    UnsupportedVersion {
+        /// Received version byte.
+        version: u8,
+    },
+
+    /// Reserved flag bits were set in a version-1 beacon.
+    #[error("unsupported beacon flag bits: {unknown:#04x}")]
+    UnsupportedFlags {
+        /// Only the unsupported bits from the received flag byte.
+        unknown: u8,
+    },
+}
+
 /// Errors from network-level operations.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
@@ -80,6 +111,10 @@ pub enum NetError {
     /// The supplied configuration is invalid.
     #[error("invalid configuration: {0}")]
     InvalidConfig(#[from] ConfigError),
+
+    /// A received discovery beacon is malformed or unsupported.
+    #[error("invalid beacon: {0}")]
+    InvalidBeacon(#[from] BeaconError),
 }
 
 /// A send could not be queued.

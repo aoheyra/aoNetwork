@@ -20,6 +20,9 @@ publish = false
 # many error variants this crate will grow (NET-04..18) is pure boilerplate.
 thiserror = "2"
 
+[dev-dependencies]
+proptest = { version = "1.8", default-features = false, features = ["std"] }
+
 [features]
 default = ["sim"]
 # In-memory SimWorld transport (NET-09); used as a dev-dependency downstream.

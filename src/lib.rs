@@ -50,10 +50,12 @@
 
 #![deny(missing_docs)]
 
+mod codec;
 mod config;
 mod error;
 mod types;
 
+pub use codec::{BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags};
 pub use config::NetworkConfig;
-pub use error::{ConfigError, DisconnectReason, NetError, SendError};
+pub use error::{BeaconError, ConfigError, DisconnectReason, NetError, SendError};
 pub use types::{Channel, LinkId, LinkRole, LocalTag, PeerKey};
