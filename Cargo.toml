@@ -9,9 +9,8 @@ repository = "https://github.com/aoheyra/aoNetwork"
 readme = "README.md"
 keywords = ["bluetooth", "ble", "mesh", "networking"]
 categories = ["network-programming"]
-# No `license` field until APP-01 decides for all four repos (see README),
-# so the crate is not publishable yet; cargo-deny skips it via
-# `[licenses.private]` for the same reason. Revisit both in NET-27.
+license = "MIT OR Apache-2.0"
+# Pre-alpha: publishing waits for v0.1.0 (NET-27).
 publish = false
 
 [dependencies]

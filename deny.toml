@@ -30,11 +30,6 @@ allow = [
     "Unicode-DFS-2016",
 ]
 
-# The workspace crate itself has no licence until APP-01 (README); it is
-# marked `publish = false`, so skip it rather than pretend it is licensed.
-[licenses.private]
-ignore = true
-
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

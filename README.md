@@ -197,4 +197,4 @@ Security issues: do not open a public issue for a vulnerability; report them pri
 
 ## License
 
-To be decided for all four repos in APP-01 (the cross-dependencies must be legally compatible). Until then, no licence is granted.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT licence](LICENSE-MIT) at your option. Decision: APP-01, applied to all four repos.
