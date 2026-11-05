@@ -154,7 +154,7 @@ Run the full set before declaring work finished. If a command cannot run in your
 
 - **One issue per PR.** Scope creep becomes a new issue. Keep diffs small and reviewable.
 - Issue titles and PR titles carry the ID: `[NET-04] Frame codec`. Branches: `net-04-frame-codec`. Commit messages reference the ID.
-- **A PR body references its issue** (`For issue #6`) and states what changed, why, how and which tests were introduced — nothing else. No process-file or tooling mentions.
+- **A PR body references its issue** (`For issue #6`) and states what changed, why, how and which tests were introduced - nothing else. No process-file or tooling mentions. Plain traditional Markdown only: no emojis, checkmarks, arrows or other non-ASCII characters, no HTML.
 - Labels: `type:*`, `prio:P0|P1|P2`, `size:S|M|L`. Milestones M0 to M7 (names are the same in every repo).
 - Respect `needs` dependencies in the backlog; do not start an issue whose prerequisites are unmerged unless you stub through a trait and say so.
 - Do not commit a `[patch]` override, generated files, large binaries or editor config.
