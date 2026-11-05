@@ -1,6 +1,6 @@
-# AGENTS.md
+# Rules
 
-Instructions for AI coding agents and human contributors. Read this fully before changing anything. Where this file and an issue disagree on *process*, this file wins; on *scope*, the issue wins.
+Read this fully before changing anything. Where this file and an issue disagree on *process*, this file wins; on *scope*, the issue wins.
 
 `aoNetwork` (package `ao_network`) is the **BLE link layer** of the aoheyra mesh: frames, fragmentation, send queue, link state machine, degree-capped topology, abuse protection, and the native contract to the Kotlin radio shim. It is sans-IO, deterministic, and knows nothing about identities, mesh packets or the app.
 
@@ -129,7 +129,7 @@ Every change ships with tests that would have failed before it.
 - **Fuzzing:** frame decode, reassembler push, beacon decode. Add a regression corpus entry for every crash found.
 - **Benchmarks** (M6) must not regress; update the memory budget when it changes.
 
-**Definition of done** for an issue: the "Done when" line is demonstrably met; tests added; `fmt`, `clippy -D warnings`, `test`, `deny`, `doc` all pass locally and in CI; docs and native-contract doc updated; no new `TODO` without an issue ID; PR description lists options considered and what was verified.
+**Definition of done** for an issue: the "Done when" line is demonstrably met; tests added; `fmt`, `clippy -D warnings`, `test`, `deny`, `doc` all pass locally and in CI; docs and native-contract doc updated; no new `TODO` without an issue ID.
 
 ---
 
@@ -154,6 +154,7 @@ Run the full set before declaring work finished. If a command cannot run in your
 
 - **One issue per PR.** Scope creep becomes a new issue. Keep diffs small and reviewable.
 - Issue titles and PR titles carry the ID: `[NET-04] Frame codec`. Branches: `net-04-frame-codec`. Commit messages reference the ID.
+- **A PR body references its issue** (`For issue #6`) and states what changed, why, how and which tests were introduced - nothing else. No process-file or tooling mentions. Plain traditional Markdown only: no emojis, checkmarks, arrows or other non-ASCII characters, no HTML.
 - Labels: `type:*`, `prio:P0|P1|P2`, `size:S|M|L`. Milestones M0 to M7 (names are the same in every repo).
 - Respect `needs` dependencies in the backlog; do not start an issue whose prerequisites are unmerged unless you stub through a trait and say so.
 - Do not commit a `[patch]` override, generated files, large binaries or editor config.
