@@ -55,7 +55,9 @@ mod config;
 mod error;
 mod types;
 
-pub use codec::{BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags};
+pub use codec::{
+    BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags, Frame, FrameCodecError, HelloFrame,
+};
 pub use config::NetworkConfig;
 pub use error::{BeaconError, ConfigError, DisconnectReason, NetError, SendError};
 pub use types::{Channel, LinkId, LinkRole, LocalTag, PeerKey};

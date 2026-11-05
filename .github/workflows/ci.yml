@@ -95,6 +95,8 @@ jobs:
   miri:
     name: Miri
     runs-on: ubuntu-latest
+    env:
+      MIRIFLAGS: -Zmiri-disable-isolation
     steps:
       - name: checkout
         uses: actions/checkout@v7
