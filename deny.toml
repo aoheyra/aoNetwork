@@ -2,7 +2,7 @@
 #
 # Gates every dependency for known advisories, acceptable licences, banned
 # duplicates/wildcards and unexpected sources. Adding a dependency that fails
-# here means changing this file in its own reviewed PR (AGENTS.md §6).
+# here means changing this file in its own reviewed PR (§6).
 
 [graph]
 all-features = true
@@ -10,13 +10,13 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-# Never add an ignore without the issue ID that justifies it (AGENTS.md §1.1).
+# Never add an ignore without the issue ID that justifies it (§1.1).
 ignore = []
 
 [licenses]
 version = 2
 # Accept only well-known permissive licences; new dependencies must fit or
-# this list changes in its own reviewed PR (AGENTS.md §6).
+# this list changes in its own reviewed PR (§6).
 allow = [
     "MIT",
     "Apache-2.0",

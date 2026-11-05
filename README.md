@@ -189,7 +189,7 @@ Full scope and "Done when" lines for every issue are in the project backlog. Iss
 ## Contributing
 
 1. Pick an issue; read its scope and "Done when" line.
-2. Read [`AGENTS.md`](AGENTS.md). It applies to humans and AI agents equally.
+2. Read the [rules](AGENTS.md).
 3. One issue per PR, with tests that demonstrate the "Done when" line.
 4. CI must be green without loosened lints, skipped tests or weakened checks.
 
