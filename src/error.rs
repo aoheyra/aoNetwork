@@ -39,6 +39,10 @@ pub enum ConfigError {
     #[error("handshake_timeout must be greater than zero")]
     HandshakeTimeoutZero,
 
+    /// `reassembly_timeout` must allow a nonzero time to complete a frame.
+    #[error("reassembly_timeout must be greater than zero")]
+    ReassemblyTimeoutZero,
+
     /// `keepalive_interval` is zero, so keepalive would fire every instant.
     #[error("keepalive_interval must be greater than zero")]
     KeepaliveIntervalZero,
@@ -115,6 +119,10 @@ pub enum NetError {
     /// A received discovery beacon is malformed or unsupported.
     #[error("invalid beacon: {0}")]
     InvalidBeacon(#[from] BeaconError),
+
+    /// A chunk could not be fragmented or reassembled.
+    #[error("invalid fragment: {0}")]
+    InvalidFragment(#[from] crate::fragment::FragmentError),
 }
 
 /// A send could not be queued.

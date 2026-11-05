@@ -23,6 +23,7 @@ const MAX_QUEUE_CAP: usize = 1024 * 1024;
 const DEFAULT_MAX_LINKS: u32 = 5;
 const DEFAULT_MIN_RSSI: i16 = -90;
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_MISSED_PONGS: u8 = 3;
 const DEFAULT_MAX_FRAME: usize = 16 * 1024;
@@ -35,6 +36,7 @@ const DEFAULT_QUEUE_CAP: usize = 128 * 1024;
 /// | `max_links` | 5 | 1..=32 |
 /// | `min_rssi` | -90 dBm | -127..=0 dBm |
 /// | `handshake_timeout` | 5 s | > 0 |
+/// | `reassembly_timeout` | 10 s | > 0 |
 /// | `keepalive_interval` | 15 s (x3 missed pongs) | > 0 |
 /// | `max_missed_pongs` | 3 | >= 1 |
 /// | `max_frame` | 16 KiB | 64 B..=1 MiB |
@@ -68,6 +70,7 @@ pub struct NetworkConfig {
     max_links: u32,
     min_rssi: i16,
     handshake_timeout: Duration,
+    reassembly_timeout: Duration,
     keepalive_interval: Duration,
     max_missed_pongs: u8,
     max_frame: usize,
@@ -96,6 +99,9 @@ impl NetworkConfig {
         }
         if self.handshake_timeout.is_zero() {
             return Err(ConfigError::HandshakeTimeoutZero);
+        }
+        if self.reassembly_timeout.is_zero() {
+            return Err(ConfigError::ReassemblyTimeoutZero);
         }
         if self.keepalive_interval.is_zero() {
             return Err(ConfigError::KeepaliveIntervalZero);
@@ -154,6 +160,15 @@ impl NetworkConfig {
         handshake_timeout: Duration,
     ) -> Result<Self, ConfigError> {
         self.handshake_timeout = handshake_timeout;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets the total time allowed to reassemble one frame (default: 10 s).
+    ///
+    /// Must be nonzero. Progress does not extend the deadline.
+    pub fn with_reassembly_timeout(mut self, timeout: Duration) -> Result<Self, ConfigError> {
+        self.reassembly_timeout = timeout;
         self.validate()?;
         Ok(self)
     }
@@ -218,6 +233,11 @@ impl NetworkConfig {
         self.handshake_timeout
     }
 
+    /// Total time allowed from the first chunk until frame completion.
+    pub fn reassembly_timeout(&self) -> Duration {
+        self.reassembly_timeout
+    }
+
     /// The keepalive ping interval.
     pub fn keepalive_interval(&self) -> Duration {
         self.keepalive_interval
@@ -247,6 +267,7 @@ impl Default for NetworkConfig {
             max_links: DEFAULT_MAX_LINKS,
             min_rssi: DEFAULT_MIN_RSSI,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+            reassembly_timeout: DEFAULT_REASSEMBLY_TIMEOUT,
             keepalive_interval: DEFAULT_KEEPALIVE_INTERVAL,
             max_missed_pongs: DEFAULT_MAX_MISSED_PONGS,
             max_frame: DEFAULT_MAX_FRAME,

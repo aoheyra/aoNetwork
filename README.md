@@ -91,6 +91,11 @@ Hand-rolled, big-endian, type byte plus LEB128 lengths. **No serde at this layer
 
 Fragmentation uses a 1-byte chunk header (START, END, 3-bit sequence). Payload per chunk is `MTU − 3 − 1`. One frame is in flight per link.
 
+`Fragmenter` borrows encoded bytes; `Reassembler` retains one bounded frame per
+link and discards it on every receive error. Time is injected; the link owner
+must call `tick` during silence. See the proposed [chunk contract](docs/adr/net-05-fragmentation.md)
+for bit assignments, timeout semantics and the pending frame-codec dependency.
+
 Beacon (16 bytes, manufacturer data in the scan response): version, flags (accepting / relay-willing / low-battery), degree, max_links, 8-byte hint, 4-byte digest. Encoding and decoding live in Rust only; Kotlin passes raw bytes.
 
 `Beacon::encode` and `Beacon::decode` implement the payload codec with typed
@@ -106,6 +111,7 @@ and scanning are separate work.
 | `max_links` | 5 (target stable 3, max stable 4, 1 explore, 1 opportunistic) |
 | `min_rssi` | -90 dBm |
 | Handshake timeout | 5 s |
+| Reassembly timeout | 10 s total per frame |
 | Keepalive | ping after 15 s idle, 3 missed pongs close the link |
 | `max_frame` | 16 KiB |
 | Send-queue cap | 128 KiB per link |
