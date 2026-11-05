@@ -4,6 +4,10 @@
 //! format for every link-management frame and uses a type byte plus LEB128
 //! lengths for all variable-length payloads.
 
+mod beacon;
+
+pub use beacon::{BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags};
+
 use crate::Channel;
 
 const FRAME_VERSION: u8 = 1;

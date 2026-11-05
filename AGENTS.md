@@ -1,6 +1,6 @@
-# AGENTS.md
+# Rules
 
-Instructions for AI coding agents and human contributors. Read this fully before changing anything. Where this file and an issue disagree on *process*, this file wins; on *scope*, the issue wins.
+Read this fully before changing anything. Where this file and an issue disagree on *process*, this file wins; on *scope*, the issue wins.
 
 `aoNetwork` (package `ao_network`) is the **BLE link layer** of the aoheyra mesh: frames, fragmentation, send queue, link state machine, degree-capped topology, abuse protection, and the native contract to the Kotlin radio shim. It is sans-IO, deterministic, and knows nothing about identities, mesh packets or the app.
 
@@ -15,6 +15,7 @@ Instructions for AI coding agents and human contributors. Read this fully before
 - **No band-aids over races.** A flaky test is a bug in the code or the test. Fix the ordering, ownership or determinism problem (e.g. seed, paused clock, explicit event ordering).
 - **If a proper fix is out of scope or blocked**, stop. Write down what you found, open or link an issue, and ask. Do not ship a hack "for now". If a temporary measure is unavoidable it needs: a `TODO(NET-xx)` with the issue ID, a stated removal condition, and explicit maintainer approval in the PR.
 - **Fix the class of bug, not the instance.** After fixing, ask where else the same flaw can occur (other length fields, other state transitions) and cover those with tests.
+- **Only for comments or docs. Do not add duplicate docs or comments. Be concise, accurate and include what's absolutely necessary only.**
 - **Do not paper over a design problem in another crate.** Report it against the owning crate (see section 3).
 
 ### 1.2 Pick the best option, and show why
@@ -25,6 +26,7 @@ For any non-trivial choice (algorithm, data structure, dependency, API shape):
 2. Compare on: correctness, security, simplicity, memory and battery cost on a phone, determinism and testability, long-term maintenance.
 3. Choose, and record the reasoning in the PR description (or an ADR in `docs/` if it changes a contract).
 4. Prefer boring, proven, well-maintained solutions. Prefer `std` and what is already a dependency.
+5. Do not add table of other options. Just briefly tell the user what pros and cons for other. Do not at all include a table or reference to other choices anywhere in codebase.
 
 **New dependencies** need: licence accepted by `cargo-deny`, active maintenance, no known advisories, MSRV compatibility, reasonable size, and a one-line justification in the PR. Do not add a dependency to save ten lines.
 
@@ -127,7 +129,7 @@ Every change ships with tests that would have failed before it.
 - **Fuzzing:** frame decode, reassembler push, beacon decode. Add a regression corpus entry for every crash found.
 - **Benchmarks** (M6) must not regress; update the memory budget when it changes.
 
-**Definition of done** for an issue: the "Done when" line is demonstrably met; tests added; `fmt`, `clippy -D warnings`, `test`, `deny`, `doc` all pass locally and in CI; docs and native-contract doc updated; no new `TODO` without an issue ID; PR description lists options considered and what was verified.
+**Definition of done** for an issue: the "Done when" line is demonstrably met; tests added; `fmt`, `clippy -D warnings`, `test`, `deny`, `doc` all pass locally and in CI; docs and native-contract doc updated; no new `TODO` without an issue ID.
 
 ---
 
@@ -152,6 +154,7 @@ Run the full set before declaring work finished. If a command cannot run in your
 
 - **One issue per PR.** Scope creep becomes a new issue. Keep diffs small and reviewable.
 - Issue titles and PR titles carry the ID: `[NET-04] Frame codec`. Branches: `net-04-frame-codec`. Commit messages reference the ID.
+- **A PR body references its issue** (`For issue #6`) and states what changed, why, how and which tests were introduced - nothing else. No process-file or tooling mentions. Plain traditional Markdown only: no emojis, checkmarks, arrows or other non-ASCII characters, no HTML.
 - Labels: `type:*`, `prio:P0|P1|P2`, `size:S|M|L`. Milestones M0 to M7 (names are the same in every repo).
 - Respect `needs` dependencies in the backlog; do not start an issue whose prerequisites are unmerged unless you stub through a trait and say so.
 - Do not commit a `[patch]` override, generated files, large binaries or editor config.

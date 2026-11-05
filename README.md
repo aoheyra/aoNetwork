@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI) and NET-02 (core types, errors, validated config) are implemented; everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
+> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config) and NET-06 (beacon codec) are implemented; everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -92,6 +92,12 @@ Hand-rolled, big-endian, type byte plus LEB128 lengths. **No serde at this layer
 Fragmentation uses a 1-byte chunk header (START, END, 3-bit sequence). Payload per chunk is `MTU − 3 − 1`. One frame is in flight per link.
 
 Beacon (16 bytes, manufacturer data in the scan response): version, flags (accepting / relay-willing / low-battery), degree, max_links, 8-byte hint, 4-byte digest. Encoding and decoding live in Rust only; Kotlin passes raw bytes.
+
+`Beacon::encode` and `Beacon::decode` implement the payload codec with typed
+`BeaconError` failures. The exact version-1 offsets, flag bits and validation
+rules are recorded in [the NET-06 ADR](docs/adr/net-06-beacon-wire-format.md).
+This codec operates on the extracted manufacturer payload; Android advertising
+and scanning are separate work.
 
 ### Defaults (validated at construction)
 
@@ -183,7 +189,7 @@ Full scope and "Done when" lines for every issue are in the project backlog. Iss
 ## Contributing
 
 1. Pick an issue; read its scope and "Done when" line.
-2. Read [`AGENTS.md`](AGENTS.md). It applies to humans and AI agents equally.
+2. Read the [rules](AGENTS.md).
 3. One issue per PR, with tests that demonstrate the "Done when" line.
 4. CI must be green without loosened lints, skipped tests or weakened checks.
 
@@ -191,4 +197,4 @@ Security issues: do not open a public issue for a vulnerability; report them pri
 
 ## License
 
-To be decided for all four repos in APP-01 (the cross-dependencies must be legally compatible). Until then, no licence is granted.
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT licence](LICENSE-MIT) at your option. Decision: APP-01, applied to all four repos.
