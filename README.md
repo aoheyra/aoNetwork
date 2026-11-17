@@ -147,8 +147,16 @@ loop {
 }
 ```
 
-`send`, `broadcast` and `links` are plain calls on the same value. Every
-`SendError` returns the payload to the caller. Nothing is silently dropped except expired or coalesced frames.
+`send`, `broadcast`, `disconnect(link, reason)` and `links` are plain calls on the same value. Every
+`SendError` returns the payload to the caller. Successful queue admission is not
+a delivery acknowledgement: queued payloads are discarded if their link closes.
+
+`disconnect` closes a link through its state machine, sending `Bye` on a
+connected link or cancelling a connection attempt. An up link reports one
+`LinkDown` with the caller's reason after transport confirmation; the peer sees
+`Bye`. Unknown or ended links are ignored, repeated closes retain the first
+reason, and sends fail once closing begins. An in-flight frame finishes before
+`Bye`; payloads still queued are discarded when the link ends.
 
 ## Design rules
 

@@ -14,6 +14,7 @@
 //! | [`set_beacon`](Network::set_beacon) | with a local `Hello`, starts advertising; then `LinkUp` as above |
 //! | [`send`](Network::send) | `Data` at the peer, or a [`SendError`] here |
 //! | [`broadcast`](Network::broadcast) | `send` to every up link |
+//! | [`disconnect`](Network::disconnect) | `LinkDown` after an up link closes; no event for a cancelled connection attempt |
 //! | [`links`](Network::links) | none; lists the up links |
 //!
 //! `LinkUp` comes once per link, after a successful handshake, and
@@ -233,6 +234,23 @@ impl<T: Transport> Network<T> {
                     .map(|err| (link, err))
             })
             .collect()
+    }
+
+    /// Closes `link` for `reason`, or cancels it if it is still connecting.
+    ///
+    /// Connected links send `Bye` before disconnecting. An up link produces
+    /// one [`NetworkEvent::LinkDown`] with the local reason when the transport
+    /// confirms closure; its peer sees [`DisconnectReason::Bye`]. Links that
+    /// never came up produce no event. Unknown or already-ended links are
+    /// ignored, and repeating a close keeps its original reason.
+    ///
+    /// Sends are refused once closing begins. Already queued payloads are
+    /// discarded with the link; an in-flight frame finishes before `Bye`.
+    pub fn disconnect(&mut self, link: LinkId, reason: DisconnectReason) {
+        if let Some(entry) = self.links.get_mut(&link) {
+            let actions = entry.machine.close(reason);
+            self.apply(link, actions);
+        }
     }
 
     /// The up links, in `LinkId` order.
