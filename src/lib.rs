@@ -59,6 +59,7 @@ mod network;
 mod queue;
 #[cfg(feature = "sim")]
 mod sim;
+mod topology;
 mod transport;
 mod types;
 

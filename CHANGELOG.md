@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Breaking: `Network::disconnect` takes the current monotonic `now`, so
+  a link cancelled while still connecting starts that peer's connect
+  backoff from the caller's clock.
+- Peer table (NET-15): every beacon sighting is recorded with a
+  moving-average RSSI and the latest valid beacon, bounded by the new
+  `max_peers` config (default 64) and evicting entries unseen for 30 s.
+  Connect attempts consult it: a peer that is already linked, still in
+  its exponential backoff after a failed attempt (1 s doubling to 60 s,
+  plus a deterministic per-peer jitter), below `min_rssi`, or not
+  accepting links is never dialled, and a freed slot is immediately
+  offered to the next candidate. The simulator now re-reports unchanged
+  beacons every scan refresh (1 s), as a radio would, so a backoff-gated
+  attempt can resume without waiting for the beacon to change.
 - Breaking: `Network::send`, `Network::broadcast` and `Link::send` take
   the current monotonic `now`, and `SendQueue::pop` takes `now`, so every
   time-dependent queue decision (expiry pruning, what may still be

@@ -80,11 +80,11 @@ fn cancelling_an_attempt_disconnects_once_without_a_link_down_event() {
         .transport()
         .attempted
         .expect("discovery started a connection");
-    net.disconnect(link, DisconnectReason::Closed);
-    net.disconnect(link, DisconnectReason::ProtocolViolation);
+    net.disconnect(Duration::ZERO, link, DisconnectReason::Closed);
+    net.disconnect(Duration::ZERO, link, DisconnectReason::ProtocolViolation);
     assert_eq!(net.transport().closed, [link]);
     assert!(net.poll_event(&mut cx, Duration::ZERO).is_pending());
     assert!(net.links().is_empty());
-    net.disconnect(link, DisconnectReason::Closed);
+    net.disconnect(Duration::ZERO, link, DisconnectReason::Closed);
     assert_eq!(net.transport().closed, [link]);
 }

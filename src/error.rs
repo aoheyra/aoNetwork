@@ -26,6 +26,17 @@ pub enum ConfigError {
         max: u32,
     },
 
+    /// `max_peers` is outside the supported `min..=max` range.
+    #[error("max_peers must be in {min}..={max}, got {value}")]
+    MaxPeersOutOfRange {
+        /// The rejected value.
+        value: u32,
+        /// Inclusive lower bound.
+        min: u32,
+        /// Inclusive upper bound.
+        max: u32,
+    },
+
     /// `min_rssi` is outside the BLE RSSI domain `min..=max` (dBm).
     #[error("min_rssi must be in {min}..={max} dBm, got {value}")]
     MinRssiOutOfRange {

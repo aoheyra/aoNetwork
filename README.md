@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config), NET-04 (frame codec), NET-05 (fragmenter and reassembler), NET-06 (beacon codec), NET-07 (fuzz targets), NET-08 (transport trait), NET-09 (simulator), NET-10 (link state machine), NET-11 (send queue), NET-12 (network facade), NET-13 (keepalive and link metrics) and NET-21 (send-queue coalescing and expiry) are implemented; NET-03 (native contract and GATT layout) is specified in [`docs/native-contract.md`](docs/native-contract.md); everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
+> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config), NET-04 (frame codec), NET-05 (fragmenter and reassembler), NET-06 (beacon codec), NET-07 (fuzz targets), NET-08 (transport trait), NET-09 (simulator), NET-10 (link state machine), NET-11 (send queue), NET-12 (network facade), NET-13 (keepalive and link metrics), NET-15 (peer table) and NET-21 (send-queue coalescing and expiry) are implemented; NET-03 (native contract and GATT layout) is specified in [`docs/native-contract.md`](docs/native-contract.md); everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -26,7 +26,7 @@ aoNetwork knows about **radio peers and frames**. It does not know what a messag
 
 ## What it does
 
-- Discovers neighbours through BLE advertising and scan-response **beacons** and decides who to connect to.
+- Discovers neighbours through BLE advertising and scan-response **beacons** and decides who to connect to, through a bounded **peer table** that evicts the unseen after 30 s and backs off after a failed attempt.
 - Runs a **link state machine** (`Connecting → Negotiating → Handshaking → Ready → Closing → Closed`) with an unauthenticated `Hello` exchange.
 - **Fragments and reassembles** frames over the BLE MTU (23 to 517).
 - Schedules traffic through a **four-channel send queue** with per-link byte caps, coalescing and expiry.
@@ -109,6 +109,7 @@ and scanning are separate work.
 | Setting | Default |
 |---|---|
 | `max_links` | 5 (target stable 3, max stable 4, 1 explore, 1 opportunistic) |
+| `max_peers` | 64 discovered peers, evicted after 30 s unseen |
 | `min_rssi` | -90 dBm |
 | Handshake timeout | 5 s |
 | Reassembly timeout | 10 s from the first chunk |

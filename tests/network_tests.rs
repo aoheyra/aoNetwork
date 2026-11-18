@@ -169,8 +169,10 @@ fn command_scenario(seed: u64) -> Vec<Vec<NetworkEvent>> {
 
     // A link that ends is reported down on both sides and refuses sends;
     // the freed slot shows in both beacons, so the pair links up again.
+    // The redial waits out the drop's backoff (1-2 s) and then the next
+    // scan refresh of the unchanged beacon (1 s), so give it 4 s.
     world.kill_link(n[0].id, a_to_b);
-    run(&world, &mut n, second);
+    run(&world, &mut n, 4 * second);
     let lost = |link| NetworkEvent::LinkDown {
         link,
         reason: DisconnectReason::TransportLost,
@@ -275,7 +277,8 @@ fn ready_pair() -> (SimWorld, Vec<Node>) {
 fn disconnect_reports_local_reason_and_peer_bye_once() {
     let (world, mut n) = ready_pair();
     let (a, b) = (n[0].link_to(&n[1]), n[1].link_to(&n[0]));
-    n[0].net.disconnect(a, DisconnectReason::Closed);
+    n[0].net
+        .disconnect(world.now(), a, DisconnectReason::Closed);
     assert_eq!(
         n[0].net.send(world.now(), a, Channel::Message, vec![7]),
         Err(SendError::LinkClosed(vec![7]))
@@ -296,7 +299,8 @@ fn disconnect_reports_local_reason_and_peer_bye_once() {
         }]
     );
     assert!(n.iter().all(|node| node.net.links().is_empty()));
-    n[0].net.disconnect(a, DisconnectReason::ProtocolViolation);
+    n[0].net
+        .disconnect(world.now(), a, DisconnectReason::ProtocolViolation);
     run(&world, &mut n, Duration::from_secs(1));
     assert!(n.iter_mut().all(|node| node.take().is_empty()));
 }
@@ -305,8 +309,10 @@ fn disconnect_reports_local_reason_and_peer_bye_once() {
 fn repeated_disconnect_preserves_the_first_reason() {
     let (world, mut n) = ready_pair();
     let a = n[0].link_to(&n[1]);
-    n[0].net.disconnect(a, DisconnectReason::ProtocolViolation);
-    n[0].net.disconnect(a, DisconnectReason::Closed);
+    n[0].net
+        .disconnect(world.now(), a, DisconnectReason::ProtocolViolation);
+    n[0].net
+        .disconnect(world.now(), a, DisconnectReason::Closed);
     run(&world, &mut n, Duration::from_secs(1));
     assert_eq!(
         n[0].take(),
@@ -323,7 +329,7 @@ fn disconnecting_an_unknown_link_does_not_interrupt_delivery() {
     let (world, mut n) = ready_pair();
     let (a, b) = (n[0].link_to(&n[1]), n[1].link_to(&n[0]));
     n[0].net
-        .disconnect(LinkId::new(u64::MAX), DisconnectReason::Closed);
+        .disconnect(world.now(), LinkId::new(u64::MAX), DisconnectReason::Closed);
     n[0].net
         .send(world.now(), a, Channel::Message, b"still linked".to_vec())
         .unwrap();
@@ -366,4 +372,37 @@ fn fifty_keyed_updates_to_a_slow_link_send_only_the_newest() {
         })
         .collect();
     assert_eq!(telemetry, [vec![49]]);
+}
+
+/// NET-15 (Done when): a dropped link is not redialled before the
+/// peer's backoff passes, however often both nodes keep seeing each
+/// other, and it does come back once the backoff and the next scan
+/// refresh have gone by.
+#[test]
+fn a_dropped_link_is_not_redialled_before_its_backoff() {
+    let (world, mut n) = nodes(SEED, &[NetworkConfig::default(), NetworkConfig::default()]);
+    for node in &mut n {
+        node.hello();
+        node.beacon();
+    }
+    run(&world, &mut n, Duration::from_secs(2));
+    assert_eq!(n[0].net.links().len(), 1);
+    let link = n[0].link_to(&n[1]);
+    world.kill_link(n[0].id, link);
+    // One failure waits at least 1 s, jitter included, before the next
+    // attempt; both nodes advertise and see each other the whole time.
+    run(&world, &mut n, Duration::from_millis(500));
+    assert!(
+        n[0].net.links().is_empty() && n[1].net.links().is_empty(),
+        "redialled before the backoff passed"
+    );
+    // By then the backoff (at most 2 s) and the next 1 s scan refresh
+    // of the unchanged beacon have both gone by.
+    run(&world, &mut n, Duration::from_secs(4));
+    assert_eq!(
+        n[0].net.links().len(),
+        1,
+        "never redialled after the backoff"
+    );
+    assert_eq!(n[1].net.links().len(), 1);
 }

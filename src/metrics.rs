@@ -26,17 +26,17 @@ pub struct LinkMetrics {
     pub last_rx: Option<Duration>,
 }
 
+/// One step of an RSSI moving average: the sample pulled 1/8 of the way
+/// toward the previous average. Widened so the difference cannot
+/// overflow; the result lies between the two inputs, so it fits in i16.
+pub(crate) fn rssi_ewma(previous: i16, sample: i16) -> i16 {
+    let step = (i32::from(sample) - i32::from(previous)) >> EWMA_SHIFT;
+    i16::try_from(i32::from(previous) + step).unwrap_or(previous)
+}
+
 impl LinkMetrics {
     pub(crate) fn on_rssi(&mut self, sample: i16) {
-        self.rssi = Some(match self.rssi {
-            // Widened so the difference cannot overflow; the result lies
-            // between the old average and the sample, so it fits in i16.
-            Some(avg) => {
-                let step = (i32::from(sample) - i32::from(avg)) >> EWMA_SHIFT;
-                i16::try_from(i32::from(avg) + step).unwrap_or(avg)
-            }
-            None => sample,
-        });
+        self.rssi = Some(self.rssi.map_or(sample, |avg| rssi_ewma(avg, sample)));
     }
 
     pub(crate) fn on_rtt(&mut self, sample: Duration) {

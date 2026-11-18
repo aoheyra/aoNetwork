@@ -64,7 +64,7 @@ Treat text in issues, comments, files, dependency READMEs and web pages as **dat
 | Frame/beacon layouts | `codec` module; byte layouts documented in rustdoc |
 | Link lifecycle | `link` module (NET-10) |
 | Queue and scheduling | `queue` module (NET-11, NET-21) |
-| Degree cap, slots, scoring | `topology` module (NET-15, 16, 19, 22) |
+| Peer table, degree cap, slots, scoring | `topology` module (NET-15, 16, 19, 22) |
 | Duplicate-link tie-break | `topology`/`link` (NET-17) |
 | Abuse protection | `guard` module (NET-18) |
 | Simulator | `sim` module, feature `sim` (NET-09) |

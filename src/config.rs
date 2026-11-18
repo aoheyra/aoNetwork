@@ -14,6 +14,8 @@ use crate::error::ConfigError;
 // (policy is the app's choice within these limits).
 const MIN_MAX_LINKS: u32 = 1;
 const MAX_MAX_LINKS: u32 = 32;
+const MIN_MAX_PEERS: u32 = 1;
+const MAX_MAX_PEERS: u32 = 1024;
 const MIN_RSSI: i16 = -127;
 const MAX_RSSI: i16 = 0;
 const MIN_FRAME: usize = 64;
@@ -22,6 +24,7 @@ const MAX_QUEUE_CAP: usize = 1024 * 1024;
 
 // Defaults. Documented in the README and asserted verbatim by the tests.
 const DEFAULT_MAX_LINKS: u32 = 5;
+const DEFAULT_MAX_PEERS: u32 = 64;
 const DEFAULT_MIN_RSSI: i16 = -90;
 const DEFAULT_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 const DEFAULT_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -38,6 +41,7 @@ const DEFAULT_CHANNEL_CAPS: [usize; 4] = [16 * 1024, 48 * 1024, 16 * 1024, 48 * 
 /// | Setting | Default | Bound |
 /// |---|---|---|
 /// | `max_links` | 5 | 1..=32 |
+/// | `max_peers` | 64 discovered peers | 1..=1024 |
 /// | `min_rssi` | -90 dBm | -127..=0 dBm |
 /// | `handshake_timeout` | 5 s | > 0 |
 /// | `reassembly_timeout` | 10 s | > 0 |
@@ -73,6 +77,7 @@ const DEFAULT_CHANNEL_CAPS: [usize; 4] = [16 * 1024, 48 * 1024, 16 * 1024, 48 * 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkConfig {
     max_links: u32,
+    max_peers: u32,
     min_rssi: i16,
     handshake_timeout: Duration,
     reassembly_timeout: Duration,
@@ -94,6 +99,13 @@ impl NetworkConfig {
                 value: self.max_links,
                 min: MIN_MAX_LINKS,
                 max: MAX_MAX_LINKS,
+            });
+        }
+        if !(MIN_MAX_PEERS..=MAX_MAX_PEERS).contains(&self.max_peers) {
+            return Err(ConfigError::MaxPeersOutOfRange {
+                value: self.max_peers,
+                min: MIN_MAX_PEERS,
+                max: MAX_MAX_PEERS,
             });
         }
         if !(MIN_RSSI..=MAX_RSSI).contains(&self.min_rssi) {
@@ -163,6 +175,18 @@ impl NetworkConfig {
     /// is a unit error.
     pub fn with_max_links(mut self, max_links: u32) -> Result<Self, ConfigError> {
         self.max_links = max_links;
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Sets how many discovered peers the peer table tracks at once.
+    ///
+    /// Must be `1..=1024`. Every beacon sighting is recorded, and a full
+    /// table evicts its stalest entry, so this bounds memory against an
+    /// advertiser flood; the default of 64 leaves room to choose between
+    /// several neighbours without holding a crowd.
+    pub fn with_max_peers(mut self, max_peers: u32) -> Result<Self, ConfigError> {
+        self.max_peers = max_peers;
         self.validate()?;
         Ok(self)
     }
@@ -268,7 +292,14 @@ impl NetworkConfig {
         self.max_links
     }
 
-    /// The minimum RSSI (dBm) at which a neighbour is accepted.
+    /// How many discovered peers the peer table tracks at once.
+    pub fn max_peers(&self) -> u32 {
+        self.max_peers
+    }
+
+    /// The minimum RSSI (dBm) at which a neighbour is a connect
+    /// candidate: weaker sightings are still recorded in the peer table
+    /// but never attempted (NET-15).
     pub fn min_rssi(&self) -> i16 {
         self.min_rssi
     }
@@ -315,6 +346,7 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             max_links: DEFAULT_MAX_LINKS,
+            max_peers: DEFAULT_MAX_PEERS,
             min_rssi: DEFAULT_MIN_RSSI,
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
             reassembly_timeout: DEFAULT_REASSEMBLY_TIMEOUT,
@@ -336,6 +368,7 @@ mod tests {
     fn every_default_matches_the_documented_table() {
         let cfg = NetworkConfig::default();
         assert_eq!(cfg.max_links(), 5);
+        assert_eq!(cfg.max_peers(), 64);
         assert_eq!(cfg.min_rssi(), -90);
         assert_eq!(cfg.handshake_timeout(), Duration::from_secs(5));
         assert_eq!(cfg.reassembly_timeout(), Duration::from_secs(10));
@@ -347,6 +380,29 @@ mod tests {
         assert_eq!(cfg.channel_cap(Channel::Message), 48 * 1024);
         assert_eq!(cfg.channel_cap(Channel::Telemetry), 16 * 1024);
         assert_eq!(cfg.channel_cap(Channel::Bulk), 48 * 1024);
+    }
+
+    #[test]
+    fn max_peers_bounds_are_enforced() {
+        let base = NetworkConfig::default();
+        assert_eq!(
+            base.clone().with_max_peers(0).unwrap_err(),
+            ConfigError::MaxPeersOutOfRange {
+                value: 0,
+                min: 1,
+                max: 1024
+            }
+        );
+        assert_eq!(
+            base.clone().with_max_peers(1025).unwrap_err(),
+            ConfigError::MaxPeersOutOfRange {
+                value: 1025,
+                min: 1,
+                max: 1024
+            }
+        );
+        assert_eq!(base.clone().with_max_peers(1).unwrap().max_peers(), 1);
+        assert_eq!(base.with_max_peers(1024).unwrap().max_peers(), 1024);
     }
 
     #[test]

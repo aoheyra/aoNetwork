@@ -23,6 +23,11 @@ use crate::{
 /// Signal strength reported for every in-range peer.
 pub const SIM_RSSI: i16 = -60;
 
+/// How often a scanner re-reports an unchanged beacon, as a radio would
+/// on each scan window. The refresh is what lets a connect attempt that
+/// backoff gated resume without waiting for the beacon to change.
+const SCAN_REFRESH: Duration = Duration::from_secs(1);
+
 /// ATT header bytes; a chunk may use the rest of the MTU.
 const ATT_HEADER: usize = 3;
 
@@ -314,8 +319,9 @@ struct NodeState {
     started: bool,
     advertising: Option<[u8; BEACON_LEN]>,
     scanning: bool,
-    /// Advertisers this scanner has reported, with the beacon it last saw.
-    seen: BTreeMap<NodeId, [u8; BEACON_LEN]>,
+    /// Advertisers this scanner has reported: the beacon it last saw
+    /// and when it was last reported.
+    seen: BTreeMap<NodeId, ([u8; BEACON_LEN], Duration)>,
     next_link: u64,
     links: BTreeMap<LinkId, Link>,
     events: VecDeque<TransportEvent>,
@@ -468,8 +474,11 @@ impl World {
         self.refresh_discovery();
     }
 
-    /// Reports every change in what each scanner can see: new or changed
-    /// beacons as `Discovered`, vanished advertisers as `Lost`.
+    /// Reports what each scanner can see: new or changed beacons as
+    /// `Discovered`, vanished advertisers as `Lost`, and an unchanged
+    /// beacon re-reported every [`SCAN_REFRESH`], as a radio would on
+    /// each scan window. The re-report lets a connect attempt that
+    /// backoff gated resume without waiting for the beacon to change.
     fn refresh_discovery(&mut self) {
         for scanner in (0..self.nodes.len()).map(NodeId) {
             let scanner_state = &self.nodes[scanner.0];
@@ -487,9 +496,14 @@ impl World {
                         .map(|beacon| (other, beacon))
                 })
                 .collect();
-            let seen = self.nodes[scanner.0].seen.clone();
+            let seen = std::mem::take(&mut self.nodes[scanner.0].seen);
+            let mut reported: BTreeMap<NodeId, ([u8; BEACON_LEN], Duration)> = BTreeMap::new();
             for (&other, beacon) in &visible {
-                if seen.get(&other) != Some(beacon) {
+                let previous = seen.get(&other);
+                let changed = previous.is_none_or(|(last, _)| last != beacon);
+                let due =
+                    previous.is_none_or(|(_, at)| self.now.saturating_sub(*at) >= SCAN_REFRESH);
+                if changed || due {
                     self.emit(
                         scanner,
                         TransportEvent::Discovered {
@@ -498,6 +512,9 @@ impl World {
                             beacon: beacon.to_vec(),
                         },
                     );
+                    reported.insert(other, (*beacon, self.now));
+                } else if let Some(&entry) = previous {
+                    reported.insert(other, entry);
                 }
             }
             for &other in seen.keys().filter(|id| !visible.contains_key(id)) {
@@ -508,7 +525,7 @@ impl World {
                     },
                 );
             }
-            self.nodes[scanner.0].seen = visible;
+            self.nodes[scanner.0].seen = reported;
         }
     }
 
@@ -742,5 +759,6 @@ impl World {
             }
         }
         self.now = until;
+        self.refresh_discovery();
     }
 }

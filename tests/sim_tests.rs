@@ -97,6 +97,12 @@ fn discovery_follows_range_and_beacon_changes() {
     assert_eq!(drain(&mut scanner), [discovered(1)]);
     advertiser.set_advertising(adv(2));
     assert_eq!(drain(&mut scanner), [discovered(2)]);
+    // An unchanged beacon is re-reported once the scan refresh is due,
+    // as a radio would on the next scan window, and not before.
+    world.advance(Duration::from_millis(999));
+    assert_eq!(drain(&mut scanner), []);
+    world.advance(Duration::from_millis(1));
+    assert_eq!(drain(&mut scanner), [discovered(2)]);
     world.set_in_range(scanner.node(), advertiser.node(), false);
     assert_eq!(drain(&mut scanner), [TransportEvent::Lost { peer }]);
 }

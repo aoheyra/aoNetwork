@@ -26,6 +26,7 @@ use std::future::{Future, poll_fn};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use crate::topology::PeerTable;
 use crate::{
     AdvProfile, AppHello, Beacon, BeaconFlags, Channel, DisconnectReason, FRAME_VERSION, Hello,
     Link, LinkAction, LinkEnd, LinkId, LinkMetrics, LinkRole, LocalTag, NetworkConfig, PeerKey,
@@ -98,8 +99,11 @@ struct Entry {
 /// it needs a `Hello` to handshake and a beacon to be found. It connects to
 /// a discovered peer when under `max_links`, when the peer's beacon says it
 /// is accepting, and when its own beacon hint sorts below the peer's, so
-/// that exactly one side of each pair dials. Inbound links beyond
-/// `max_links`, or from a peer already linked, are refused.
+/// that exactly one side of each pair dials. The peer table gates the rest:
+/// a peer must not already be linked, must be past the backoff of its last
+/// failed attempt, must be at or above `min_rssi`, and must have been seen
+/// within the last 30 s. Inbound links beyond `max_links`, or from a peer
+/// already linked, are refused.
 ///
 /// # Example
 ///
@@ -152,6 +156,8 @@ pub struct Network<T> {
     links: BTreeMap<LinkId, Entry>,
     /// Every link, in any state, by peer.
     peers: BTreeMap<PeerKey, LinkId>,
+    /// Peers seen in beacons, with their backoff and eviction.
+    table: PeerTable,
     events: VecDeque<NetworkEvent>,
 }
 
@@ -159,6 +165,7 @@ impl<T: Transport> Network<T> {
     /// A node on `transport`, which it starts.
     pub fn new(config: NetworkConfig, mut transport: T) -> Self {
         transport.start();
+        let table = PeerTable::new(&config);
         Self {
             config,
             transport,
@@ -168,6 +175,7 @@ impl<T: Transport> Network<T> {
             advertised: None,
             links: BTreeMap::new(),
             peers: BTreeMap::new(),
+            table,
             events: VecDeque::new(),
         }
     }
@@ -244,7 +252,7 @@ impl<T: Transport> Network<T> {
             return Err(SendError::LinkClosed(payload));
         };
         let actions = entry.machine.send_opts(now, channel, payload, opts)?;
-        self.apply(link, actions);
+        self.apply(now, link, actions);
         Ok(())
     }
 
@@ -276,10 +284,14 @@ impl<T: Transport> Network<T> {
     ///
     /// Sends are refused once closing begins. Already queued payloads are
     /// discarded with the link; an in-flight frame finishes before `Bye`.
-    pub fn disconnect(&mut self, link: LinkId, reason: DisconnectReason) {
+    ///
+    /// `now` is the current monotonic time: a link closed while it is
+    /// still connecting ends the attempt at once, and the peer table
+    /// starts that peer's backoff from it.
+    pub fn disconnect(&mut self, now: Duration, link: LinkId, reason: DisconnectReason) {
         if let Some(entry) = self.links.get_mut(&link) {
             let actions = entry.machine.close(reason);
-            self.apply(link, actions);
+            self.apply(now, link, actions);
         }
     }
 
@@ -339,8 +351,11 @@ impl<T: Transport> Network<T> {
                 self.apply_profiles();
                 return;
             }
-            TransportEvent::Discovered { peer, beacon, .. } => {
-                self.maybe_connect(*peer, beacon);
+            TransportEvent::Discovered { peer, rssi, beacon } => {
+                let fresh = self.table.observe(now, *peer, *rssi, beacon);
+                if fresh {
+                    self.connect_to(now, *peer);
+                }
                 return;
             }
             TransportEvent::Connected {
@@ -366,22 +381,26 @@ impl<T: Transport> Network<T> {
         };
         if let Some(entry) = self.links.get_mut(&link) {
             let actions = entry.machine.on_event(now, event);
-            self.apply(link, actions);
+            self.apply(now, link, actions);
         }
     }
 
-    fn maybe_connect(&mut self, peer: PeerKey, beacon: &[u8]) {
+    /// Starts an outbound connection to `peer` when the peer table and
+    /// the local policy allow one now: the peer must be a candidate
+    /// (not linked, past its backoff, accepting, strong, recently seen)
+    /// and its hint must sort below ours, so that exactly one side of
+    /// each pair dials.
+    fn connect_to(&mut self, now: Duration, peer: PeerKey) {
         let (Some(hello), Some(own)) = (&self.hello, &self.beacon) else {
             return;
         };
-        let Ok(theirs) = Beacon::decode(beacon) else {
+        if !self.has_room() || !self.table.eligible(&peer, now, &self.peers) {
+            return;
+        }
+        let Some(hint) = self.table.hint_of(&peer) else {
             return;
         };
-        if !theirs.flags.accepting
-            || own.hint >= theirs.hint
-            || !self.has_room()
-            || self.peers.contains_key(&peer)
-        {
+        if own.hint >= hint {
             return;
         }
         let machine = Link::new(&self.config, hello.clone());
@@ -421,6 +440,7 @@ impl<T: Transport> Network<T> {
             },
         );
         self.peers.insert(peer, link);
+        self.table.mark_connecting(&peer);
         self.apply_profiles();
     }
 
@@ -434,12 +454,12 @@ impl<T: Transport> Network<T> {
         for link in due {
             if let Some(entry) = self.links.get_mut(&link) {
                 let actions = entry.machine.on_tick(now);
-                self.apply(link, actions);
+                self.apply(now, link, actions);
             }
         }
     }
 
-    fn apply(&mut self, link: LinkId, actions: Vec<LinkAction>) {
+    fn apply(&mut self, now: Duration, link: LinkId, actions: Vec<LinkAction>) {
         for action in actions {
             match action {
                 LinkAction::Write(chunk) => self.transport.write(link, chunk),
@@ -447,6 +467,7 @@ impl<T: Transport> Network<T> {
                 LinkAction::Ready { remote, .. } => {
                     if let Some(entry) = self.links.get_mut(&link) {
                         entry.up = true;
+                        self.table.mark_linked(&entry.peer);
                     }
                     self.events.push_back(NetworkEvent::LinkUp {
                         link,
@@ -460,15 +481,16 @@ impl<T: Transport> Network<T> {
                         payload,
                     });
                 }
-                LinkAction::Down(end) => self.remove(link, end),
+                LinkAction::Down(end) => self.remove(now, link, end),
             }
         }
     }
 
-    fn remove(&mut self, link: LinkId, end: LinkEnd) {
+    fn remove(&mut self, now: Duration, link: LinkId, end: LinkEnd) {
         let Some(entry) = self.links.remove(&link) else {
             return;
         };
+        self.table.mark_down(now, &entry.peer);
         if self.peers.get(&entry.peer) == Some(&link) {
             self.peers.remove(&entry.peer);
         }
@@ -477,6 +499,11 @@ impl<T: Transport> Network<T> {
                 .push_back(NetworkEvent::LinkDown { link, reason });
         }
         self.apply_profiles();
+        // A slot just freed: dial the next candidate now rather than
+        // waiting for a sighting to say the neighbourhood changed.
+        for peer in self.table.candidates(now, &self.peers) {
+            self.connect_to(now, peer);
+        }
     }
 
     /// Scans once a `Hello` is set; advertises once a beacon is set too.
