@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use ao_network::{
     AppHello, BeaconFlags, Channel, DisconnectReason, LinkId, LocalTag, Network, NetworkConfig,
-    NetworkEvent, NodeId, PeerKey, SendError, SimConfig, SimNode, SimTransport, SimWorld,
+    NetworkEvent, NodeId, PeerKey, SendError, SendOpts, SimConfig, SimNode, SimTransport, SimWorld,
 };
 
 const SEED: u64 = 0x0012_5EED;
@@ -150,14 +150,18 @@ fn command_scenario(seed: u64) -> Vec<Vec<NetworkEvent>> {
     // send: Data at that peer only.
     let (a_to_b, b_to_a) = (n[0].link_to(&n[1]), n[1].link_to(&n[0]));
     n[0].net
-        .send(a_to_b, Channel::Message, b"hi B".to_vec())
+        .send(world.now(), a_to_b, Channel::Message, b"hi B".to_vec())
         .unwrap();
     run(&world, &mut n, second);
     assert_eq!(n[1].take(), [data(b_to_a, Channel::Message, b"hi B")]);
     assert!(n[0].take().is_empty() && n[2].take().is_empty());
 
     // broadcast: Data at every peer.
-    assert!(n[2].net.broadcast(Channel::Bulk, b"hi all").is_empty());
+    assert!(
+        n[2].net
+            .broadcast(world.now(), Channel::Bulk, b"hi all")
+            .is_empty()
+    );
     run(&world, &mut n, second);
     let (a_to_c, b_to_c) = (n[0].link_to(&n[2]), n[1].link_to(&n[2]));
     assert_eq!(n[0].take(), [data(a_to_c, Channel::Bulk, b"hi all")]);
@@ -180,7 +184,8 @@ fn command_scenario(seed: u64) -> Vec<Vec<NetworkEvent>> {
         trace.push(events);
     }
     assert_eq!(
-        n[0].net.send(a_to_b, Channel::Message, vec![7]),
+        n[0].net
+            .send(world.now(), a_to_b, Channel::Message, vec![7]),
         Err(SendError::LinkClosed(vec![7]))
     );
     trace
@@ -204,10 +209,13 @@ fn payloads_over_the_peers_max_frame_come_back() {
     let link = n[0].link_to(&n[1]);
     // A 60-byte payload is a 64-byte frame; one more is too many.
     assert_eq!(
-        n[0].net.send(link, Channel::Message, vec![1; 61]),
+        n[0].net
+            .send(world.now(), link, Channel::Message, vec![1; 61]),
         Err(SendError::TooLarge(vec![1; 61]))
     );
-    n[0].net.send(link, Channel::Message, vec![1; 60]).unwrap();
+    n[0].net
+        .send(world.now(), link, Channel::Message, vec![1; 60])
+        .unwrap();
     run(&world, &mut n, Duration::from_secs(1));
     let back = n[1].link_to(&n[0]);
     assert_eq!(
@@ -269,7 +277,7 @@ fn disconnect_reports_local_reason_and_peer_bye_once() {
     let (a, b) = (n[0].link_to(&n[1]), n[1].link_to(&n[0]));
     n[0].net.disconnect(a, DisconnectReason::Closed);
     assert_eq!(
-        n[0].net.send(a, Channel::Message, vec![7]),
+        n[0].net.send(world.now(), a, Channel::Message, vec![7]),
         Err(SendError::LinkClosed(vec![7]))
     );
     run(&world, &mut n, Duration::from_secs(1));
@@ -317,9 +325,45 @@ fn disconnecting_an_unknown_link_does_not_interrupt_delivery() {
     n[0].net
         .disconnect(LinkId::new(u64::MAX), DisconnectReason::Closed);
     n[0].net
-        .send(a, Channel::Message, b"still linked".to_vec())
+        .send(world.now(), a, Channel::Message, b"still linked".to_vec())
         .unwrap();
     run(&world, &mut n, Duration::from_secs(1));
     assert!(n[0].take().is_empty());
     assert_eq!(n[1].take(), [data(b, Channel::Message, b"still linked")]);
+}
+
+/// NET-21 (Done when): queueing fifty updates with one coalesce key to a
+/// link that is still draining a bulk frame sends only the newest one.
+#[test]
+fn fifty_keyed_updates_to_a_slow_link_send_only_the_newest() {
+    let (world, mut n) = ready_pair();
+    let a = n[0].link_to(&n[1]);
+    // Saturate the link: the bulk frame keeps the transport busy, so
+    // nothing newly queued can be written while it drains.
+    n[0].net
+        .send(world.now(), a, Channel::Bulk, vec![0xB0; 2000])
+        .unwrap();
+    let opts = SendOpts {
+        coalesce_key: Some([9; 16]),
+        expires_at: None,
+    };
+    for update in 0..50u8 {
+        n[0].net
+            .send_opts(world.now(), a, Channel::Telemetry, vec![update], opts)
+            .unwrap();
+    }
+    run(&world, &mut n, Duration::from_secs(2));
+    let telemetry: Vec<Vec<u8>> = n[1]
+        .take()
+        .into_iter()
+        .filter_map(|event| match event {
+            NetworkEvent::Data {
+                channel: Channel::Telemetry,
+                payload,
+                ..
+            } => Some(payload),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(telemetry, [vec![49]]);
 }

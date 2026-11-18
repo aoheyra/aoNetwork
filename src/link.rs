@@ -12,8 +12,8 @@ use std::time::Duration;
 use crate::codec::data_frame_len;
 use crate::{
     Channel, ConnectError, DisconnectReason, Fragmenter, Frame, FrameError, HandshakeFailure,
-    Hello, LinkMetrics, MAX_MTU, MIN_MTU, NetworkConfig, Reassembler, SendError, SendQueue,
-    TransportEvent,
+    Hello, LinkMetrics, MAX_MTU, MIN_MTU, NetworkConfig, Reassembler, SendError, SendOpts,
+    SendQueue, TransportEvent,
 };
 
 /// Where a link is in its lifecycle.
@@ -144,26 +144,29 @@ impl Link {
     }
 
     /// When [`on_tick`](Self::on_tick) next has work: the handshake
-    /// deadline, or on a ready link the next keepalive step or the
-    /// reassembly deadline of a partial frame.
+    /// deadline, or on a ready link the next keepalive step, the
+    /// reassembly deadline of a partial frame, or the earliest queued
+    /// frame deadline - ticking then prunes it, so an idle link never
+    /// holds an expired payload.
     pub fn next_deadline(&self) -> Option<Duration> {
+        let expiry = self.queue.earliest_expiry();
+        let at = |due: Duration| expiry.map_or(due, |e| due.min(e));
         match self.state {
-            LinkState::Negotiating | LinkState::Handshaking => Some(self.deadline),
+            LinkState::Negotiating | LinkState::Handshaking => Some(at(self.deadline)),
             LinkState::Ready => {
                 let keepalive = self.keepalive_at();
-                Some(
-                    self.reassembler
-                        .deadline()
-                        .map_or(keepalive, |d| d.min(keepalive)),
-                )
+                Some(at(self
+                    .reassembler
+                    .deadline()
+                    .map_or(keepalive, |d| d.min(keepalive))))
             }
             _ => None,
         }
     }
 
-    /// Queues `payload` on `channel`. Before the handshake completes it
-    /// waits in the queue, unchecked against the peer's `max_frame`, which
-    /// is not known yet.
+    /// Queues `payload` on `channel` at `now`. Before the handshake
+    /// completes it waits in the queue, unchecked against the peer's
+    /// `max_frame`, which is not known yet.
     ///
     /// # Errors
     ///
@@ -173,8 +176,23 @@ impl Link {
     /// the payload unchanged.
     pub fn send(
         &mut self,
+        now: Duration,
         channel: Channel,
         payload: Vec<u8>,
+    ) -> Result<Vec<LinkAction>, SendError> {
+        self.send_opts(now, channel, payload, SendOpts::default())
+    }
+
+    /// [`send`](Self::send) with [`SendOpts`]: a coalesce key or a frame
+    /// deadline for this payload. Expired frames waiting in the queue are
+    /// dropped at `now` before admission, so a deadline cannot hold cap
+    /// bytes against a new push.
+    pub fn send_opts(
+        &mut self,
+        now: Duration,
+        channel: Channel,
+        payload: Vec<u8>,
+        opts: SendOpts,
     ) -> Result<Vec<LinkAction>, SendError> {
         if matches!(self.state, LinkState::Closing | LinkState::Closed) {
             return Err(SendError::LinkClosed(payload));
@@ -185,8 +203,10 @@ impl Link {
         {
             return Err(SendError::TooLarge(payload));
         }
-        self.queue.push(channel, payload)?;
+        self.queue.prune(now);
+        self.queue.push_opts(channel, opts, payload)?;
         let mut out = Vec::new();
+        self.fill(now);
         self.flush(&mut out);
         Ok(out)
     }
@@ -217,6 +237,7 @@ impl Link {
             }
             TransportEvent::WriteReady { .. } => {
                 self.can_write = true;
+                self.fill(now);
                 self.flush(&mut out);
             }
             TransportEvent::Received { chunk, .. } => {
@@ -247,6 +268,9 @@ impl Link {
     /// `keepalive_interval x (max_missed_pongs + 1)` after it last sent.
     pub fn on_tick(&mut self, now: Duration) -> Vec<LinkAction> {
         let mut out = Vec::new();
+        // An idle queue expires on time too; without this the deadline
+        // above would fire again on every poll.
+        self.queue.prune(now);
         let handshaking = matches!(self.state, LinkState::Negotiating | LinkState::Handshaking);
         if !handshaking && self.state != LinkState::Ready {
             return out;
@@ -283,6 +307,7 @@ impl Link {
         }
         self.ping_sent_at = Some(now);
         self.enqueue(&Frame::Ping);
+        self.fill(now);
         self.flush(out);
     }
 
@@ -329,6 +354,7 @@ impl Link {
                     self.remote_max_frame =
                         Some(usize::try_from(remote.max_frame).unwrap_or(usize::MAX));
                     out.push(LinkAction::Ready { remote, version });
+                    self.fill(now);
                     self.flush(out);
                 }
                 None => self.fail(
@@ -344,6 +370,7 @@ impl Link {
             }
             (LinkState::Ready, Frame::Ping) => {
                 self.enqueue(&Frame::Pong);
+                self.fill(now);
                 self.flush(out);
             }
             (LinkState::Ready, Frame::Pong) => match self.ping_sent_at.take() {
@@ -380,14 +407,24 @@ impl Link {
         }
     }
 
-    fn flush(&mut self, out: &mut Vec<LinkAction>) {
+    /// Takes the next payload from the queue into the outbox at `now`,
+    /// once the transport has a write credit and nothing else is going
+    /// out. `pop` drops expired frames first, so a frame past its
+    /// deadline is never written.
+    fn fill(&mut self, now: Duration) {
         if !self.can_write {
             return;
         }
         if self.outbox.is_empty() && self.state == LinkState::Ready {
-            if let Some((channel, payload)) = self.queue.pop() {
+            if let Some((channel, payload)) = self.queue.pop(now) {
                 self.enqueue(&Frame::Data { channel, payload });
             }
+        }
+    }
+
+    fn flush(&mut self, out: &mut Vec<LinkAction>) {
+        if !self.can_write {
+            return;
         }
         if let Some(chunk) = self.outbox.pop_front() {
             self.can_write = false;

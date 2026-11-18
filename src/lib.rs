@@ -74,7 +74,7 @@ pub use error::{
 pub use link::{Link, LinkAction, LinkEnd, LinkState};
 pub use metrics::LinkMetrics;
 pub use network::{LinkInfo, Network, NetworkEvent};
-pub use queue::SendQueue;
+pub use queue::{SendOpts, SendQueue};
 #[cfg(feature = "sim")]
 pub use sim::{NodeId, SIM_RSSI, SimConfig, SimError, SimNode, SimTransport, SimWorld};
 pub use transport::{

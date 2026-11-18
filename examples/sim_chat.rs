@@ -54,7 +54,7 @@ fn main() {
             if !said_hello[i] && net.links().len() == 2 {
                 said_hello[i] = true;
                 let text = format!("hello from {}", NAMES[i]);
-                for (link, err) in net.broadcast(Channel::Message, text.as_bytes()) {
+                for (link, err) in net.broadcast(world.now(), Channel::Message, text.as_bytes()) {
                     println!(
                         "{:>6} {:<5} could not send on {link:?}: {err}",
                         "", NAMES[i]

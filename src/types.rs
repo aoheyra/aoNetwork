@@ -140,7 +140,9 @@ pub enum Channel {
     Control,
     /// Direct and broadcast packets: deficit round-robin, weight ~4.
     Message,
-    /// Latest-wins data such as location: coalescing, never `QueueFull`.
+    /// Latest-wins data such as location: coalescing, and oldest
+    /// waiting frames evicted under pressure, so it meets `QueueFull` only
+    /// with a payload larger than the whole channel cap.
     Telemetry,
     /// Sync transfers: deficit round-robin, weight ~1.
     Bulk,

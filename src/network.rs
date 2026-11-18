@@ -12,7 +12,7 @@
 //! |---|---|
 //! | [`set_local_hello`](Network::set_local_hello) | starts scanning; with a beacon also advertising; then `LinkUp` per neighbour whose handshake succeeds |
 //! | [`set_beacon`](Network::set_beacon) | with a local `Hello`, starts advertising; then `LinkUp` as above |
-//! | [`send`](Network::send) | `Data` at the peer, or a [`SendError`] here |
+//! | [`send`](Network::send), [`send_opts`](Network::send_opts) | `Data` at the peer, or a [`SendError`] here |
 //! | [`broadcast`](Network::broadcast) | `send` to every up link |
 //! | [`disconnect`](Network::disconnect) | `LinkDown` after an up link closes; no event for a cancelled connection attempt |
 //! | [`links`](Network::links) | none; lists the up links |
@@ -29,7 +29,7 @@ use std::time::Duration;
 use crate::{
     AdvProfile, AppHello, Beacon, BeaconFlags, Channel, DisconnectReason, FRAME_VERSION, Hello,
     Link, LinkAction, LinkEnd, LinkId, LinkMetrics, LinkRole, LocalTag, NetworkConfig, PeerKey,
-    PowerMode, RadioState, ScanProfile, SendError, Transport, TransportEvent,
+    PowerMode, RadioState, ScanProfile, SendError, SendOpts, Transport, TransportEvent,
 };
 
 /// Something the layer above must know about.
@@ -205,7 +205,11 @@ impl<T: Transport> Network<T> {
         self.apply_profiles();
     }
 
-    /// Queues `payload` on `channel` of an up `link`.
+    /// Queues `payload` on `channel` of an up `link`, as of `now`.
+    ///
+    /// `now` is the same monotonic network time passed to
+    /// [`poll_event`](Self::poll_event): it prunes expired frames before
+    /// admission and decides what the link may still write.
     ///
     /// # Errors
     ///
@@ -213,25 +217,49 @@ impl<T: Transport> Network<T> {
     /// [`Link::send`]. The payload always comes back unchanged.
     pub fn send(
         &mut self,
+        now: Duration,
         link: LinkId,
         channel: Channel,
         payload: Vec<u8>,
     ) -> Result<(), SendError> {
+        self.send_opts(now, link, channel, payload, SendOpts::default())
+    }
+
+    /// [`send`](Self::send) with [`SendOpts`]: a coalesce key (latest-wins
+    /// replacement of a waiting frame) or a deadline after which the
+    /// payload is dropped without being written.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send).
+    pub fn send_opts(
+        &mut self,
+        now: Duration,
+        link: LinkId,
+        channel: Channel,
+        payload: Vec<u8>,
+        opts: SendOpts,
+    ) -> Result<(), SendError> {
         let Some(entry) = self.links.get_mut(&link).filter(|e| e.up) else {
             return Err(SendError::LinkClosed(payload));
         };
-        let actions = entry.machine.send(channel, payload)?;
+        let actions = entry.machine.send_opts(now, channel, payload, opts)?;
         self.apply(link, actions);
         Ok(())
     }
 
-    /// Sends a copy of `payload` on `channel` of every up link. Returns
-    /// the links that refused it, with why.
-    pub fn broadcast(&mut self, channel: Channel, payload: &[u8]) -> Vec<(LinkId, SendError)> {
+    /// Sends a copy of `payload` on `channel` of every up link, as of
+    /// `now`. Returns the links that refused it, with why.
+    pub fn broadcast(
+        &mut self,
+        now: Duration,
+        channel: Channel,
+        payload: &[u8],
+    ) -> Vec<(LinkId, SendError)> {
         let up: Vec<LinkId> = self.links().iter().map(|info| info.link).collect();
         up.into_iter()
             .filter_map(|link| {
-                self.send(link, channel, payload.to_vec())
+                self.send(now, link, channel, payload.to_vec())
                     .err()
                     .map(|err| (link, err))
             })

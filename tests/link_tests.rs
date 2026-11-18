@@ -9,7 +9,7 @@ use std::time::Duration;
 use ao_network::{
     AdvProfile, AppHello, Channel, DisconnectReason, Fragmenter, Frame, HandshakeFailure, Hello,
     Link, LinkAction, LinkEnd, LinkId, LinkMetrics, LinkRole, LinkState, LocalTag, NetworkConfig,
-    PeerKey, PowerMode, SendError, SimConfig, SimNode, SimTransport, SimWorld, Transport,
+    PeerKey, PowerMode, SendError, SendOpts, SimConfig, SimNode, SimTransport, SimWorld, Transport,
     TransportEvent,
 };
 
@@ -118,9 +118,9 @@ impl Node {
     }
 
     /// Sends on this node's only link.
-    fn send(&mut self, channel: Channel, payload: Vec<u8>) {
+    fn send(&mut self, now: Duration, channel: Channel, payload: Vec<u8>) {
         let (&link, machine) = self.links.iter_mut().next().unwrap();
-        let actions = machine.send(channel, payload).unwrap();
+        let actions = machine.send(now, channel, payload).unwrap();
         self.apply(link, actions);
     }
 
@@ -295,7 +295,7 @@ fn control_waits_at_most_one_frame_behind_bulk() {
     // Queued before the handshake; flows once the link is ready.
     let bulk: Vec<Vec<u8>> = (0..10).map(|i| vec![i; 500]).collect();
     for payload in &bulk {
-        a.send(Channel::Bulk, payload.clone());
+        a.send(world.now(), Channel::Bulk, payload.clone());
     }
     let tick = |a: &mut Node, b: &mut Node| {
         world.advance(TICK);
@@ -307,7 +307,7 @@ fn control_waits_at_most_one_frame_behind_bulk() {
     }
 
     let sent_at = world.now();
-    a.send(Channel::Control, vec![0xC0; 4]);
+    a.send(world.now(), Channel::Control, vec![0xC0; 4]);
     while !b.data().contains(&(Channel::Control, vec![0xC0; 4])) {
         tick(&mut a, &mut b);
     }
@@ -350,9 +350,64 @@ fn send_on_a_closing_link_returns_the_payload() {
     link.on_event(Duration::ZERO, connected(MTU));
     link.close(DisconnectReason::Closed);
     assert_eq!(
-        link.send(Channel::Message, vec![9; 3]),
+        link.send(Duration::ZERO, Channel::Message, vec![9; 3]),
         Err(SendError::LinkClosed(vec![9; 3]))
     );
+}
+
+/// NET-21: a frame past its deadline is dropped before anything is
+/// written, and the deadline itself is what the owner is woken for.
+#[test]
+fn a_frame_past_its_deadline_is_never_written() {
+    let mut link = Link::new(&NetworkConfig::default(), hello(1, 1, 0));
+    link.on_event(Duration::ZERO, connected(MTU));
+    let opts = SendOpts {
+        coalesce_key: None,
+        expires_at: Some(Duration::from_millis(1)),
+    };
+    link.send_opts(Duration::ZERO, Channel::Message, vec![9; 40], opts)
+        .unwrap();
+    // The owner wakes at the frame's deadline, well before the handshake
+    // timeout, so an idle link never holds an expired payload.
+    assert_eq!(link.next_deadline(), Some(Duration::from_millis(1)));
+
+    // The handshake completes only after the deadline: the link comes up,
+    // writes what it owes, and never writes the expired payload.
+    let hello_chunks: Vec<_> = Fragmenter::new(&Frame::Hello(hello(1, 1, 0)).encode(), MTU)
+        .unwrap()
+        .collect();
+    let mut out = Vec::new();
+    for chunk in hello_chunks {
+        out.extend(link.on_event(
+            Duration::from_millis(2),
+            TransportEvent::Received {
+                link: LinkId::new(1),
+                chunk,
+            },
+        ));
+    }
+    assert_eq!(link.state(), LinkState::Ready);
+    assert!(
+        out.iter()
+            .any(|action| matches!(action, LinkAction::Ready { .. })),
+        "the handshake must complete: {out:?}"
+    );
+    assert!(
+        !out.iter()
+            .any(|action| matches!(action, LinkAction::Data { .. })),
+        "an expired frame was written: {out:?}"
+    );
+
+    // And a tick at or past the deadline prunes the queue in place, with
+    // no action at all, so the deadline does not fire again.
+    let mut idle = Link::new(&NetworkConfig::default(), hello(1, 1, 0));
+    idle.on_event(Duration::ZERO, connected(MTU));
+    idle.send_opts(Duration::ZERO, Channel::Message, vec![9; 40], opts)
+        .unwrap();
+    assert!(idle.on_tick(Duration::from_millis(1)).is_empty());
+    // The frame's wake-up is gone: only the handshake deadline remains,
+    // so this tick does not fire again for an empty queue.
+    assert_ne!(idle.next_deadline(), Some(Duration::from_millis(1)));
 }
 
 #[test]
