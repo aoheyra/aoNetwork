@@ -406,3 +406,171 @@ fn a_dropped_link_is_not_redialled_before_its_backoff() {
     );
     assert_eq!(n[1].net.links().len(), 1);
 }
+
+/// A world where only the pairs `(last node, peer)` are in range and
+/// every peer's beacon hint sorts below the last node's, so the peers
+/// dial it and it admits them as inbound links.
+fn a_with_peers(radios: &[SimNode]) -> (SimWorld, Vec<Node>) {
+    let world = SimWorld::new(SimConfig {
+        seed: SEED,
+        ..SimConfig::default()
+    });
+    let nodes: Vec<Node> = radios
+        .iter()
+        .enumerate()
+        .map(|(i, radio)| {
+            let radio = world.add_node(*radio).unwrap();
+            let (key, id) = (radio.peer_key(), radio.node());
+            let tag = (i + 1) as u8;
+            let mut node = Node {
+                net: Network::new(NetworkConfig::default(), radio),
+                key,
+                id,
+                tag: LocalTag::new([tag; 16]),
+                events: Vec::new(),
+            };
+            node.hello();
+            node.beacon();
+            node
+        })
+        .collect();
+    let a = nodes.len() - 1;
+    for peer in 0..a {
+        world.set_in_range(nodes[a].id, nodes[peer].id, true);
+    }
+    (world, nodes)
+}
+
+/// NET-16: four links is one over the stable target, but a link whose
+/// peer is still strong is never shed - the hysteresis that stops a
+/// node from churning a healthy neighbourhood.
+#[test]
+fn links_over_the_target_survive_while_strong() {
+    let (world, mut nodes) = a_with_peers(&[SimNode::default(); 5]);
+    run(&world, &mut nodes, Duration::from_secs(2));
+    let a = nodes.len() - 1;
+    assert_eq!(
+        nodes[a].net.links().len(),
+        4,
+        "four links, one over the stable target"
+    );
+    nodes[a].take();
+    // Long past the minimum link age, with every scan refresh firing
+    // the eviction check again.
+    run(&world, &mut nodes, Duration::from_secs(20));
+    assert_eq!(
+        nodes[a].net.links().len(),
+        4,
+        "a strong link was shed anyway"
+    );
+    assert!(
+        !nodes[a]
+            .take()
+            .into_iter()
+            .any(|event| matches!(event, NetworkEvent::LinkDown { .. })),
+        "a strong link was shed anyway"
+    );
+}
+
+/// NET-16: the same four links, one of them to a peer that then drifts
+/// below the admission floor: once the node is over its target and the
+/// link is old enough, only that one goes, and it goes with DegreeCap
+/// after a clean Bye, not as a silent drop.
+#[test]
+fn a_degraded_link_over_the_target_is_evicted() {
+    // Four strong peers and A; the last peer is degraded later.
+    let (world, mut nodes) = a_with_peers(&[SimNode::default(); 5]);
+    run(&world, &mut nodes, Duration::from_secs(2));
+    let (w, a) = (3, nodes.len() - 1);
+    assert_eq!(nodes[a].net.links().len(), 4);
+    let w_link = nodes[a].link_to(&nodes[w]);
+    nodes[a].take();
+
+    // W's signal sinks below the floor; the scan refreshes carry the
+    // new reading into the table until the average crosses it.
+    world.set_rssi(nodes[w].id, -95);
+    run(&world, &mut nodes, Duration::from_secs(16));
+    let downs: Vec<(LinkId, DisconnectReason)> = nodes[a]
+        .take()
+        .into_iter()
+        .filter_map(|event| match event {
+            NetworkEvent::LinkDown { link, reason } => Some((link, reason)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(downs, [(w_link, DisconnectReason::DegreeCap)]);
+    assert_eq!(
+        nodes[a].net.links().len(),
+        3,
+        "only the degraded link was shed"
+    );
+    // The survivors are still there by peer, not just by count.
+    for peer in 0..nodes.len() - 1 {
+        if peer == w {
+            continue;
+        }
+        let link = nodes[a].link_to(&nodes[peer]);
+        assert_ne!(link, w_link);
+    }
+    // And the weak peer cannot walk straight back in: its backoff
+    // passes within this window, so it does retry, but the floor
+    // refuses the inbound again.
+    run(&world, &mut nodes, Duration::from_secs(4));
+    assert!(
+        !nodes[a]
+            .take()
+            .into_iter()
+            .any(|event| matches!(event, NetworkEvent::LinkUp { .. })),
+        "the evicted peer was linked again while still weak"
+    );
+    assert_eq!(nodes[a].net.links().len(), 3);
+}
+
+/// NET-16: eviction only runs under pressure - at the stable target a
+/// link that has degraded below the floor is kept, because shedding it
+/// would only cost a connection the node has room for.
+#[test]
+fn a_degraded_link_is_kept_while_at_the_target() {
+    // Two strong peers, W (to be degraded later), then A.
+    let (world, mut nodes) = a_with_peers(&[SimNode::default(); 4]);
+    run(&world, &mut nodes, Duration::from_secs(2));
+    let (w, a) = (2, nodes.len() - 1);
+    assert_eq!(nodes[a].net.links().len(), 3, "three links: at the target");
+    nodes[a].take();
+
+    world.set_rssi(nodes[w].id, -95);
+    run(&world, &mut nodes, Duration::from_secs(16));
+    assert_eq!(
+        nodes[a].net.links().len(),
+        3,
+        "the degraded link was shed with room to spare"
+    );
+    nodes[a].link_to(&nodes[w]);
+    assert!(
+        !nodes[a]
+            .take()
+            .into_iter()
+            .any(|event| matches!(event, NetworkEvent::LinkDown { .. }))
+    );
+}
+
+/// NET-16: the floor binds inbound links - a peer the node would never
+/// dial is not one it holds, whatever order the sighting and the
+/// connection arrive in.
+#[test]
+fn a_peer_below_the_floor_is_not_admitted() {
+    let mut radios = vec![SimNode::default(); 5];
+    radios[3] = SimNode {
+        rssi: -95,
+        ..SimNode::default()
+    };
+    let (world, mut nodes) = a_with_peers(&radios);
+    run(&world, &mut nodes, Duration::from_secs(3));
+    let (w, a) = (3, nodes.len() - 1);
+    assert_eq!(
+        nodes[a].net.links().len(),
+        3,
+        "the weak peer was admitted inbound"
+    );
+    assert!(nodes[w].net.links().is_empty(), "the weak peer got a link");
+}

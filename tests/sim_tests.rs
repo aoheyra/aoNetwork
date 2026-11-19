@@ -280,6 +280,7 @@ fn ten_node_run(seed: u64) -> Vec<(Duration, usize, TransportEvent)> {
                     mtu: 23 + 50 * u16::try_from(i).unwrap(),
                     max_links: 3,
                     can_advertise: true,
+                    ..SimNode::default()
                 })
                 .unwrap()
         })

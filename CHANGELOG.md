@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Topology policy (NET-16): the link manager admits links through a
+  `TopologyPolicy` derived from `max_links` and `min_rssi` - stable
+  slots up to `max_stable` (the stable target plus one, so a healthy
+  link never fights for its place at the target), then the single
+  explore slot, and never the opportunistic slot (reserved for
+  NET-22). With no slot free the advertised `accepting` flag goes
+  false. Candidates are scored by `rssi * 4 - degree` and dialed
+  best-first, a node over its stable target evicts its worst link once
+  it is past a 10 s minimum age and below the admission floor (strong
+  links are kept - the hysteresis that stops a neighbourhood
+  churning), inbound links meet the same slots and the same floor, and
+  three rejected outbound attempts in a row lower the session's
+  effective cap by one (floor 1; a completed handshake clears the
+  streak).
+- Breaking: `SimNode` gains an `rssi` field for the signal other nodes
+  report when hearing it (default `SIM_RSSI`), and `SimWorld::set_rssi`
+  changes it, so a test can drift a peer below the floor while its
+  link is held.
 - Breaking: `Network::disconnect` takes the current monotonic `now`, so
   a link cancelled while still connecting starts that peer's connect
   backoff from the caller's clock.

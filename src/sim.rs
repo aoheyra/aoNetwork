@@ -20,7 +20,8 @@ use crate::{
     PeerKey, RadioState, ScanProfile, Transport, TransportCaps, TransportEvent,
 };
 
-/// Signal strength reported for every in-range peer.
+/// Signal strength a node reports for every in-range peer by default;
+/// override it per node with [`SimNode::rssi`].
 pub const SIM_RSSI: i16 = -60;
 
 /// How often a scanner re-reports an unchanged beacon, as a radio would
@@ -64,6 +65,9 @@ pub struct SimNode {
     pub max_links: u32,
     /// Whether it can advertise and accept links.
     pub can_advertise: bool,
+    /// Signal strength other nodes report when they hear it advertise,
+    /// as `Discovered` RSSI.
+    pub rssi: i16,
 }
 
 impl Default for SimNode {
@@ -72,6 +76,7 @@ impl Default for SimNode {
             mtu: 247,
             max_links: 7,
             can_advertise: true,
+            rssi: SIM_RSSI,
         }
     }
 }
@@ -171,6 +176,13 @@ impl SimWorld {
     /// range drops their links with [`DisconnectReason::TransportLost`].
     pub fn set_in_range(&self, a: NodeId, b: NodeId, in_range: bool) {
         with_world(&self.world, |w| w.set_in_range(a, b, in_range));
+    }
+
+    /// Reports `node` at `rssi` to every scanner from the next scan
+    /// refresh on, as if its signal had moved; tests use it to drift a
+    /// peer below the admission floor while a link is held.
+    pub fn set_rssi(&self, node: NodeId, rssi: i16) {
+        with_world(&self.world, |w| w.set_rssi(node, rssi));
     }
 
     /// Drops one link on both sides, as if the radio connection broke.
@@ -452,6 +464,14 @@ impl World {
         self.refresh_discovery();
     }
 
+    fn set_rssi(&mut self, node: NodeId, rssi: i16) {
+        if node.0 >= self.nodes.len() {
+            return;
+        }
+        self.nodes[node.0].config.rssi = rssi;
+        self.refresh_discovery();
+    }
+
     fn set_in_range(&mut self, a: NodeId, b: NodeId, in_range: bool) {
         if a == b || a.0 >= self.nodes.len() || b.0 >= self.nodes.len() {
             return;
@@ -508,7 +528,7 @@ impl World {
                         scanner,
                         TransportEvent::Discovered {
                             peer: peer_key(other),
-                            rssi: SIM_RSSI,
+                            rssi: self.nodes[other.0].config.rssi,
                             beacon: beacon.to_vec(),
                         },
                     );

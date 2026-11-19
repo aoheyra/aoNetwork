@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config), NET-04 (frame codec), NET-05 (fragmenter and reassembler), NET-06 (beacon codec), NET-07 (fuzz targets), NET-08 (transport trait), NET-09 (simulator), NET-10 (link state machine), NET-11 (send queue), NET-12 (network facade), NET-13 (keepalive and link metrics), NET-15 (peer table) and NET-21 (send-queue coalescing and expiry) are implemented; NET-03 (native contract and GATT layout) is specified in [`docs/native-contract.md`](docs/native-contract.md); everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
+> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config), NET-04 (frame codec), NET-05 (fragmenter and reassembler), NET-06 (beacon codec), NET-07 (fuzz targets), NET-08 (transport trait), NET-09 (simulator), NET-10 (link state machine), NET-11 (send queue), NET-12 (network facade), NET-13 (keepalive and link metrics), NET-15 (peer table), NET-16 (topology policy) and NET-21 (send-queue coalescing and expiry) are implemented; NET-03 (native contract and GATT layout) is specified in [`docs/native-contract.md`](docs/native-contract.md); everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -30,7 +30,7 @@ aoNetwork knows about **radio peers and frames**. It does not know what a messag
 - Runs a **link state machine** (`Connecting → Negotiating → Handshaking → Ready → Closing → Closed`) with an unauthenticated `Hello` exchange.
 - **Fragments and reassembles** frames over the BLE MTU (23 to 517).
 - Schedules traffic through a **four-channel send queue** with per-link byte caps, coalescing and expiry.
-- Enforces the **degree cap** (how many links a phone keeps) with stable, exploratory and opportunistic slots.
+- Enforces the **degree cap** (how many links a phone keeps): admission fills stable slots up to `max_stable` (the stable target plus one) and then the single explore slot, candidates are scored by signal and by the peer's degree so the best neighbour is dialled first, a node over its target sheds its weakest degraded link (below `min_rssi` and past a 10 s minimum age) while strong links are kept, inbound links meet the same slots and floor, and three rejected attempts in a row lower the session's cap. With no slot free the node stops advertising `accepting`, so nobody dials it into a full table. The opportunistic slot is reserved for NET-22.
 - Detects dead links (**keepalive**) and tracks per-link metrics (RSSI, RTT, bytes, drops).
 - Protects itself from hostile neighbours with **per-link rate limits, strikes and a temporary blacklist**. Every neighbour is treated as hostile.
 - Exposes a single sans-IO façade (`Network`) that the caller polls from its own async task, and a **native contract** (`NativeSink`) that the Kotlin BLE module implements.

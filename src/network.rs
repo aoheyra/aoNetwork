@@ -26,11 +26,12 @@ use std::future::{Future, poll_fn};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::topology::PeerTable;
+use crate::topology::{ClassCounts, LinkClass, PeerTable, TopologyPolicy};
 use crate::{
-    AdvProfile, AppHello, Beacon, BeaconFlags, Channel, DisconnectReason, FRAME_VERSION, Hello,
-    Link, LinkAction, LinkEnd, LinkId, LinkMetrics, LinkRole, LocalTag, NetworkConfig, PeerKey,
-    PowerMode, RadioState, ScanProfile, SendError, SendOpts, Transport, TransportEvent,
+    AdvProfile, AppHello, Beacon, BeaconFlags, Channel, ConnectError, DisconnectReason,
+    FRAME_VERSION, Hello, Link, LinkAction, LinkEnd, LinkId, LinkMetrics, LinkRole, LinkState,
+    LocalTag, NetworkConfig, PeerKey, PowerMode, RadioState, ScanProfile, SendError, SendOpts,
+    Transport, TransportEvent,
 };
 
 /// Something the layer above must know about.
@@ -89,6 +90,12 @@ struct Entry {
     machine: Link,
     peer: PeerKey,
     role: LinkRole,
+    /// Which slot admitted it, so admission and eviction count the
+    /// classes separately.
+    class: LinkClass,
+    /// When it was admitted: eviction spares links younger than the
+    /// policy's minimum age.
+    opened_at: Duration,
     up: bool,
 }
 
@@ -97,13 +104,18 @@ struct Entry {
 /// Until both [`set_local_hello`](Self::set_local_hello) and
 /// [`set_beacon`](Self::set_beacon) are called the node forms no links:
 /// it needs a `Hello` to handshake and a beacon to be found. It connects to
-/// a discovered peer when under `max_links`, when the peer's beacon says it
-/// is accepting, and when its own beacon hint sorts below the peer's, so
-/// that exactly one side of each pair dials. The peer table gates the rest:
-/// a peer must not already be linked, must be past the backoff of its last
-/// failed attempt, must be at or above `min_rssi`, and must have been seen
-/// within the last 30 s. Inbound links beyond `max_links`, or from a peer
-/// already linked, are refused.
+/// a discovered peer when the topology policy has a slot free, when the
+/// peer's beacon says it is accepting, and when its own beacon hint sorts
+/// below the peer's, so that exactly one side of each pair dials. The peer
+/// table gates the rest: a peer must not already be linked, must be past
+/// the backoff of its last failed attempt, must be at or above
+/// `min_rssi`, and must have been seen within the last 30 s. Inbound
+/// links are admitted against the same slots and the same floor, so
+/// links of every class together stay within `max_links`; beyond that,
+/// below the floor, or from a peer already linked, they are refused.
+/// Once over its stable target the node sheds its weakest degraded link
+/// and keeps strong ones, and three rejected outbound attempts in a
+/// row lower the session's cap.
 ///
 /// # Example
 ///
@@ -158,6 +170,8 @@ pub struct Network<T> {
     peers: BTreeMap<PeerKey, LinkId>,
     /// Peers seen in beacons, with their backoff and eviction.
     table: PeerTable,
+    /// The slots, scores and eviction rules links are admitted under.
+    policy: TopologyPolicy,
     events: VecDeque<NetworkEvent>,
 }
 
@@ -166,6 +180,7 @@ impl<T: Transport> Network<T> {
     pub fn new(config: NetworkConfig, mut transport: T) -> Self {
         transport.start();
         let table = PeerTable::new(&config);
+        let policy = TopologyPolicy::new(&config);
         Self {
             config,
             transport,
@@ -176,6 +191,7 @@ impl<T: Transport> Network<T> {
             links: BTreeMap::new(),
             peers: BTreeMap::new(),
             table,
+            policy,
             events: VecDeque::new(),
         }
     }
@@ -356,6 +372,9 @@ impl<T: Transport> Network<T> {
                 if fresh {
                     self.connect_to(now, *peer);
                 }
+                // A sighting may have moved a held link's peer below
+                // the floor, which is when it becomes evictable.
+                self.enforce_eviction(now);
                 return;
             }
             TransportEvent::Connected {
@@ -364,7 +383,7 @@ impl<T: Transport> Network<T> {
                 role: LinkRole::Responder,
                 ..
             } => {
-                if !self.accept(*link, *peer) {
+                if !self.accept(now, *link, *peer) {
                     self.transport.disconnect(*link);
                     return;
                 }
@@ -389,12 +408,16 @@ impl<T: Transport> Network<T> {
     /// the local policy allow one now: the peer must be a candidate
     /// (not linked, past its backoff, accepting, strong, recently seen)
     /// and its hint must sort below ours, so that exactly one side of
-    /// each pair dials.
+    /// each pair dials. The link is admitted into the class the policy
+    /// grants from the current inventory: stable first, then explore.
     fn connect_to(&mut self, now: Duration, peer: PeerKey) {
         let (Some(hello), Some(own)) = (&self.hello, &self.beacon) else {
             return;
         };
-        if !self.has_room() || !self.table.eligible(&peer, now, &self.peers) {
+        let Some(class) = self.policy.admit(&self.counts()) else {
+            return;
+        };
+        if !self.table.eligible(&peer, now, &self.peers) {
             return;
         }
         let Some(hint) = self.table.hint_of(&peer) else {
@@ -405,37 +428,80 @@ impl<T: Transport> Network<T> {
         }
         let machine = Link::new(&self.config, hello.clone());
         let link = self.transport.connect(peer);
-        self.add(link, peer, LinkRole::Initiator, machine);
+        self.add(now, link, peer, LinkRole::Initiator, class, machine);
     }
 
-    /// Admits an inbound link, if there is room and a `Hello` to send.
-    fn accept(&mut self, link: LinkId, peer: PeerKey) -> bool {
+    /// Admits an inbound link, if a `Hello` to send and a slot of some
+    /// class are free. The policy decides, not the caller: an inbound
+    /// link consumes the same stable or explore slot an outbound one
+    /// would, and never the opportunistic slot (NET-22 owns it), and a
+    /// peer below the policy's admission floor is refused the same way
+    /// a candidate would be, so an evicted weak peer cannot walk
+    /// straight back in while it is still weak. A peer that has never
+    /// been seen cannot be judged and is admitted.
+    fn accept(&mut self, now: Duration, link: LinkId, peer: PeerKey) -> bool {
         let Some(hello) = &self.hello else {
             return false;
         };
-        if !self.has_room() || self.peers.contains_key(&peer) {
+        let Some(class) = self.policy.admit(&self.counts()) else {
+            return false;
+        };
+        if self.peers.contains_key(&peer) {
+            return false;
+        }
+        if self
+            .table
+            .rssi_of(&peer)
+            .is_some_and(|rssi| rssi < self.policy.admit_floor)
+        {
             return false;
         }
         let machine = Link::new(&self.config, hello.clone());
-        self.add(link, peer, LinkRole::Responder, machine);
+        self.add(now, link, peer, LinkRole::Responder, class, machine);
         true
     }
 
+    /// The current inventory, for admission and eviction decisions.
+    fn counts(&self) -> ClassCounts {
+        let mut counts = ClassCounts {
+            total: self.links.len(),
+            stable: 0,
+            explore: 0,
+        };
+        for entry in self.links.values() {
+            match entry.class {
+                LinkClass::Stable => counts.stable += 1,
+                LinkClass::Explore => counts.explore += 1,
+                // Opportunistic links count towards the total only;
+                // NET-22 admits them against their own slot.
+                LinkClass::Opportunistic => {}
+            }
+        }
+        counts
+    }
+
+    /// Whether any class would admit one more link right now.
     fn has_room(&self) -> bool {
-        self.links.len() < self.max_links()
+        self.policy.admit(&self.counts()).is_some()
     }
 
-    fn max_links(&self) -> usize {
-        usize::try_from(self.config.max_links()).unwrap_or(usize::MAX)
-    }
-
-    fn add(&mut self, link: LinkId, peer: PeerKey, role: LinkRole, machine: Link) {
+    fn add(
+        &mut self,
+        now: Duration,
+        link: LinkId,
+        peer: PeerKey,
+        role: LinkRole,
+        class: LinkClass,
+        machine: Link,
+    ) {
         self.links.insert(
             link,
             Entry {
                 machine,
                 peer,
                 role,
+                class,
+                opened_at: now,
                 up: false,
             },
         );
@@ -469,10 +535,14 @@ impl<T: Transport> Network<T> {
                         entry.up = true;
                         self.table.mark_linked(&entry.peer);
                     }
+                    self.policy.note_success();
                     self.events.push_back(NetworkEvent::LinkUp {
                         link,
                         remote_hello: remote,
                     });
+                    // A new link may have taken the node over its
+                    // stable target.
+                    self.enforce_eviction(now);
                 }
                 LinkAction::Data { channel, payload } => {
                     self.events.push_back(NetworkEvent::Data {
@@ -490,6 +560,13 @@ impl<T: Transport> Network<T> {
         let Some(entry) = self.links.remove(&link) else {
             return;
         };
+        if entry.role == LinkRole::Initiator
+            && matches!(end, LinkEnd::ConnectFailed(ConnectError::Rejected))
+        {
+            // Our own outbound attempt was turned away: count the
+            // strike that lowers the session's effective cap.
+            self.policy.note_rejection();
+        }
         self.table.mark_down(now, &entry.peer);
         if self.peers.get(&entry.peer) == Some(&link) {
             self.peers.remove(&entry.peer);
@@ -503,6 +580,51 @@ impl<T: Transport> Network<T> {
         // waiting for a sighting to say the neighbourhood changed.
         for peer in self.table.candidates(now, &self.peers) {
             self.connect_to(now, peer);
+        }
+    }
+
+    /// Sheds the worst link while the node holds more healthy links
+    /// than its stable target: only a link that is up and ready, has
+    /// survived the policy's minimum age, and whose peer average has
+    /// fallen below the admission floor may go, and the weakest score
+    /// goes first. Links that are merely over the target but strong
+    /// are kept - that is the hysteresis that stops a node from
+    /// churning its neighbourhood. The evicted peer inherits its
+    /// normal backoff through [`PeerTable::mark_down`], so it cannot
+    /// be redialed the moment a slot frees.
+    fn enforce_eviction(&mut self, now: Duration) {
+        loop {
+            let ready = self
+                .links
+                .values()
+                .filter(|entry| entry.up && entry.machine.state() == LinkState::Ready)
+                .count();
+            if ready <= self.policy.target_stable {
+                return;
+            }
+            let worst = self
+                .links
+                .iter()
+                .filter(|(_, entry)| entry.up && entry.machine.state() == LinkState::Ready)
+                .filter(|(_, entry)| {
+                    now.saturating_sub(entry.opened_at) >= self.policy.link_min_age
+                })
+                .filter_map(|(&link, entry)| {
+                    let rssi = self.table.rssi_of(&entry.peer)?;
+                    if rssi >= self.policy.admit_floor {
+                        return None;
+                    }
+                    // Without a beacon there is nothing to compare
+                    // against; such a link is left to end on its own.
+                    let score = self.table.score_of(&entry.peer)?;
+                    Some((link, score))
+                })
+                .min_by_key(|&(link, score)| (score, link))
+                .map(|(link, _)| link);
+            let Some(worst) = worst else {
+                return;
+            };
+            self.disconnect(now, worst, DisconnectReason::DegreeCap);
         }
     }
 
@@ -538,6 +660,249 @@ impl<T: Transport> Network<T> {
             self.advertised = Some(beacon);
             self.transport
                 .set_advertising(Some(AdvProfile { beacon, mode }));
+        }
+    }
+}
+
+#[cfg(all(test, feature = "sim"))]
+mod tests {
+    use super::*;
+    use crate::{SimConfig, SimNode, SimTransport, SimWorld};
+    use proptest::prelude::*;
+    use proptest::test_runner::{Config, MapFailurePersistence, RngSeed};
+    use std::task::Waker;
+
+    /// A world with one `Network` per radio, hello and beacon
+    /// configured, and only the given pairs in radio range.
+    fn world_with(
+        radios: &[SimNode],
+        hints: &[[u8; 8]],
+        pairs: &[(usize, usize)],
+    ) -> (SimWorld, Vec<Network<SimTransport>>) {
+        let world = SimWorld::new(SimConfig::default());
+        let nets: Vec<Network<SimTransport>> = radios
+            .iter()
+            .enumerate()
+            .map(|(i, radio)| {
+                let radio = world.add_node(*radio).unwrap();
+                let mut net = Network::new(NetworkConfig::default(), radio);
+                net.set_local_hello(
+                    LocalTag::new([(i + 1) as u8; 16]),
+                    AppHello::new(Vec::new()).unwrap(),
+                );
+                net.set_beacon(
+                    hints[i],
+                    [0; 4],
+                    BeaconFlags {
+                        accepting: true,
+                        ..BeaconFlags::default()
+                    },
+                );
+                net
+            })
+            .collect();
+        for &(a, b) in pairs {
+            let (na, nb) = (nets[a].transport().node(), nets[b].transport().node());
+            world.set_in_range(na, nb, true);
+        }
+        (world, nets)
+    }
+
+    fn settle(world: &SimWorld, nets: &mut [Network<SimTransport>]) {
+        let mut cx = Context::from_waker(Waker::noop());
+        for net in nets.iter_mut() {
+            while net.poll_event(&mut cx, world.now()).is_ready() {}
+        }
+    }
+
+    fn run(world: &SimWorld, nets: &mut [Network<SimTransport>], duration: Duration) {
+        let end = world.now() + duration;
+        while world.now() < end {
+            world.advance(Duration::from_millis(10));
+            settle(world, nets);
+        }
+    }
+
+    /// Admission walks stable to the stable cap and then uses the
+    /// explore slot for the fifth link: the outbound explore pick
+    /// comes from the candidates, which never offer a peer that is
+    /// already linked, so all five links are to distinct peers and a
+    /// re-sighting of an existing neighbour never opens a sixth.
+    #[test]
+    fn admission_walks_stable_then_explore() {
+        // Node 0 is the target: hint [3] sorts below P3 and P4, so it
+        // dials them, and above P1 and P2, so they dial it.
+        let radios = vec![SimNode::default(); 6];
+        let hints = [[3; 8], [1; 8], [2; 8], [4; 8], [5; 8], [6; 8]];
+        let pairs: Vec<(usize, usize)> = (1..5).map(|i| (0, i)).collect();
+        let (world, mut nets) = world_with(&radios, &hints, &pairs);
+        run(&world, &mut nets, Duration::from_secs(3));
+
+        let target = &nets[0];
+        assert_eq!(target.links().len(), 4, "four inbound and outbound links");
+        let counts = target.counts();
+        assert_eq!((counts.total, counts.stable, counts.explore), (4, 4, 0));
+
+        // The fifth peer arrives; the re-sightings of the linked
+        // peers cannot be dialed again, so only this one is.
+        let (na, np5) = (nets[0].transport().node(), nets[5].transport().node());
+        world.set_in_range(na, np5, true);
+        run(&world, &mut nets, Duration::from_secs(3));
+
+        let target = &nets[0];
+        assert_eq!(target.links().len(), 5, "the explore slot opened");
+        let counts = target.counts();
+        assert_eq!((counts.total, counts.stable, counts.explore), (5, 4, 1));
+        let explore = target
+            .links
+            .values()
+            .find(|entry| entry.class == LinkClass::Explore)
+            .map(|entry| entry.peer);
+        assert_eq!(explore, Some(nets[5].transport().peer_key()));
+        let mut peers: Vec<PeerKey> = target.links().iter().map(|info| info.peer).collect();
+        peers.sort();
+        peers.dedup();
+        assert_eq!(peers.len(), 5, "every link is to a distinct peer");
+    }
+
+    /// Three rejected outbound attempts in a row lower the session's
+    /// effective cap by one, and the node then refuses an inbound it
+    /// would otherwise have taken.
+    #[test]
+    fn rejections_lower_the_cap_end_to_end() {
+        // 0 A: the node under test. 1 B: a radio capped at two links,
+        // filled by 2 C and 3 D before A ever dials, so A's attempts
+        // come back Rejected. 4..8: dialers for the final phase.
+        let radios = vec![
+            SimNode::default(),
+            SimNode {
+                max_links: 2,
+                ..SimNode::default()
+            },
+            SimNode::default(),
+            SimNode::default(),
+            SimNode::default(),
+            SimNode::default(),
+            SimNode::default(),
+            SimNode::default(),
+            SimNode::default(),
+        ];
+        let hints = [
+            [2; 8], [5; 8], [3; 8], [4; 8], [0; 8], [0; 8], [0; 8], [0; 8], [0; 8],
+        ];
+        let (world, mut nets) = world_with(&radios, &hints, &[(1, 2), (1, 3)]);
+        run(&world, &mut nets, Duration::from_secs(2));
+        assert_eq!(nets[1].links().len(), 2, "B's radio is full");
+
+        // A comes into range and dials; B's radio refuses the third
+        // connection at the transport level. The loop stops on the
+        // first observation of the lowered cap, which can only be the
+        // third rejection: a fourth attempt is still in backoff.
+        let (na, nb) = (nets[0].transport().node(), nets[1].transport().node());
+        world.set_in_range(na, nb, true);
+        while nets[0].policy.effective_cap == nets[0].policy.max_total {
+            world.advance(Duration::from_millis(250));
+            settle(&world, &mut nets);
+            assert!(
+                world.now() < Duration::from_secs(30),
+                "three rejections never arrived"
+            );
+        }
+        assert_eq!(nets[0].policy.effective_cap, 4);
+
+        // Five peers come into range at once, from a sighting taken
+        // while A was still advertising room: four are admitted, the
+        // fifth meets the lowered cap and is refused.
+        for e in 4..9 {
+            let (na, ne) = (nets[0].transport().node(), nets[e].transport().node());
+            world.set_in_range(na, ne, true);
+        }
+        run(&world, &mut nets, Duration::from_secs(2));
+        assert_eq!(nets[0].links().len(), 4, "the fifth inbound was refused");
+        let dialed: usize = nets[4..].iter().map(|net| net.links().len()).sum();
+        assert_eq!(dialed, 4, "exactly one of the five has no link");
+    }
+
+    #[derive(Debug)]
+    enum Action {
+        Advance(u16),
+        Toggle(u8, u8, bool),
+    }
+
+    fn action() -> impl Strategy<Value = Action> {
+        prop_oneof![
+            (1..50u16).prop_map(Action::Advance),
+            (0..6u8, 0..6u8, any::<bool>()).prop_map(|(a, b, on)| Action::Toggle(a, b, on)),
+        ]
+    }
+
+    fn churn() -> Config {
+        let mut config = Config::with_cases(24);
+        config.rng_seed = RngSeed::Fixed(0x0016_1616);
+        // In-memory persistence: Miri forbids the getcwd that file
+        // persistence needs. The fixed seed replays every run;
+        // promote any minimal failing input to a regression test.
+        config.failure_persistence = Some(Box::new(MapFailurePersistence::default()));
+        config
+    }
+
+    // Done when: total links never exceed the cap under random
+    // join/leave churn. Admission counts connecting and closing
+    // entries against the cap, so no interleaving gets past it.
+    proptest! {
+        #![proptest_config(churn())]
+        #[test]
+        fn links_never_exceed_the_cap_under_churn(
+            actions in proptest::collection::vec(action(), 30..90),
+        ) {
+            let world = SimWorld::new(SimConfig::default());
+            let config = NetworkConfig::default();
+            let max = usize::try_from(config.max_links()).unwrap_or(usize::MAX);
+            let mut nets: Vec<Network<SimTransport>> = (0..6u8)
+                .map(|i| {
+                    let radio = world.add_node(SimNode::default()).unwrap();
+                    let mut net = Network::new(config.clone(), radio);
+                    net.set_local_hello(
+                        LocalTag::new([i; 16]),
+                        AppHello::new(Vec::new()).unwrap(),
+                    );
+                    net.set_beacon(
+                        [i; 8],
+                        [0; 4],
+                        BeaconFlags {
+                            accepting: true,
+                            ..BeaconFlags::default()
+                        },
+                    );
+                    net
+                })
+                .collect();
+            for a in 0..nets.len() {
+                for b in a + 1..nets.len() {
+                    let (na, nb) = (nets[a].transport().node(), nets[b].transport().node());
+                    world.set_in_range(na, nb, true);
+                }
+            }
+            for step in actions {
+                match step {
+                    Action::Advance(ms) => world.advance(Duration::from_millis(u64::from(ms))),
+                    Action::Toggle(a, b, on) => {
+                        let (a, b) = (a as usize, b as usize);
+                        if a != b && a < nets.len() && b < nets.len() {
+                            let (na, nb) = (nets[a].transport().node(), nets[b].transport().node());
+                            world.set_in_range(na, nb, on);
+                        }
+                    }
+                }
+                settle(&world, &mut nets);
+                for net in &nets {
+                    assert!(
+                        net.links.len() <= max,
+                        "cap exceeded: {} links, cap {max}, after {step:?}",
+                        net.links.len()
+                    );
+                }
+            }
         }
     }
 }
