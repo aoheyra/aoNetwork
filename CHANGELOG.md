@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- Advisory per-peer link hints (NET-16): `Network::set_link_hint(peer, LinkHintPreference)`,
+  `clear_link_hint`, `link_hint` and `link_hints` take typed advice from aoMesh,
+  bounded by `max_peers`, keyed by the opaque `PeerKey` and never enforced as a
+  cap. `Prefer` orders a peer first and skips the 4 s initiation delay;
+  `Deprioritize` orders it last; `Neutral` or clearing removes advice. A full
+  hint table drops the lowest preference, then the greatest key. Advice
+  survives sightings and has no clock-based expiry. `LinkInfo` and
+  `LinkSnapshot` gain `up_at`, and `Snapshot` gains `hints`, for time-to-link
+  observability; struct literals of these public types need the new fields.
+
 ## 0.1.0 - 2026-11-21
 
 First tagged release, for aoMesh to consume by git tag. Every entry below

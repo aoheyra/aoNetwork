@@ -125,6 +125,53 @@ impl From<[u8; 16]> for LocalTag {
     }
 }
 
+/// Advisory preference for forming a link with one radio peer (NET-16).
+///
+/// The layer above sets this through [`Network::set_link_hint`](crate::Network::set_link_hint)
+/// to say which neighbours it would benefit from. It is **advice only**:
+/// `aoMesh` never reserves a slot, evicts a link or changes the degree cap.
+/// `aoNetwork` alone applies the preference under its own admission rules.
+///
+/// The set is closed and bounded: a preference can only be `Deprioritize`,
+/// `Neutral` or `Prefer`, with ranks -1, 0 and 1. Ties are settled by
+/// signal score and then [`PeerKey`], never by arrival order.
+///
+/// # Example
+///
+/// ```
+/// use ao_network::LinkHintPreference;
+///
+/// assert_eq!(LinkHintPreference::default(), LinkHintPreference::Neutral);
+/// assert!(LinkHintPreference::Prefer > LinkHintPreference::Deprioritize);
+/// assert_eq!(LinkHintPreference::Prefer.rank(), 1);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum LinkHintPreference {
+    /// Try this peer after unhinted peers; it may still be linked when a
+    /// slot is free.
+    Deprioritize,
+    /// No advice: the ordinary topology rules decide. This is the default,
+    /// and what removal restores.
+    #[default]
+    Neutral,
+    /// Try this peer before unhinted peers and dial it without the
+    /// initiation delay, so a contact in range links sooner.
+    Prefer,
+}
+
+impl LinkHintPreference {
+    /// The bounded ordering used by topology: -1, 0 or 1.
+    pub const fn rank(self) -> i8 {
+        match self {
+            Self::Deprioritize => -1,
+            Self::Neutral => 0,
+            Self::Prefer => 1,
+        }
+    }
+}
+
 /// Which side of the connection opened the link.
 ///
 /// Decides who sends `Hello` first and how the handshake state machine
@@ -199,6 +246,18 @@ mod tests {
         assert_eq!(key.as_bytes(), tag.as_bytes());
         assert_eq!(key, PeerKey::from([5; 16]));
         assert_eq!(tag, LocalTag::from([5; 16]));
+    }
+
+    #[test]
+    fn hint_preferences_are_a_bounded_ordered_set() {
+        let all = [
+            LinkHintPreference::Deprioritize,
+            LinkHintPreference::Neutral,
+            LinkHintPreference::Prefer,
+        ];
+        assert_eq!(all.map(LinkHintPreference::rank), [-1, 0, 1]);
+        assert!(all.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(LinkHintPreference::default(), LinkHintPreference::Neutral);
     }
 
     #[test]
