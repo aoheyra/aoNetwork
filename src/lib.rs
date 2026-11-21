@@ -96,4 +96,4 @@ pub use topology::LinkClass;
 pub use transport::{
     AdvProfile, PowerMode, RadioState, ScanProfile, Transport, TransportCaps, TransportEvent,
 };
-pub use types::{Channel, LinkId, LinkRole, LocalTag, PeerKey};
+pub use types::{Channel, LinkHintPreference, LinkId, LinkRole, LocalTag, PeerKey};

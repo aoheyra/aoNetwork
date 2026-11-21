@@ -55,7 +55,8 @@ Legacy (non-extended) advertising, connectable, no device name, no TX power.
   are zero. It is a radio address, not an identity: it rotates, and the same
   phone can show different addresses as central and as peripheral. Kotlin does
   not deduplicate by it.
-- **`mtu`** (`u16`) is the negotiated ATT MTU, 23..=517.
+- **`mtu`** (`u16`) is the negotiated ATT MTU, 23..=517. Advisory link hints
+  from the layer above are keyed by `PeerKey` and stay inside Rust.
 
 ## 4. Rust → Kotlin: `NativeSink`
 
