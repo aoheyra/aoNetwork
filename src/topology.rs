@@ -29,13 +29,17 @@
 //! so the layers above can sync with a passing node. It ends on release
 //! or after [`DWELL`], and [`Cooldowns`] then bars the peer's hint for
 //! [`COOLDOWN`] unless its digest changes again.
+//!
+//! [`LinkHintPreference`] values from the layer above only advise which peer
+//! to dial first. [`HintTable`] holds at most `max_peers` of them; the degree
+//! cap, admission floor and slots stay entirely in [`TopologyPolicy`].
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::time::Duration;
 
 use crate::metrics::rssi_ewma;
-use crate::{Beacon, LinkId, LinkRole, LocalTag, NetworkConfig, PeerKey};
+use crate::{Beacon, LinkHintPreference, LinkId, LinkRole, LocalTag, NetworkConfig, PeerKey};
 
 /// Entries unseen for longer than this are evicted, so a peer that stops
 /// advertising does not hold memory or a candidate slot forever.
@@ -206,6 +210,77 @@ impl TopologyPolicy {
     /// Records a completed handshake: the rejection streak is over.
     pub(crate) fn note_success(&mut self) {
         self.rejections = 0;
+    }
+}
+
+/// Bounded advisory preferences, one per radio peer (NET-16).
+///
+/// Advice outlives sightings: a contact that goes away keeps its preference
+/// until it is cleared or displaced. There is no clock here to expire it.
+/// A full table drops the lowest preference first, then the greatest
+/// [`PeerKey`], so advice that arrives in a different order still converges
+/// to the same table.
+#[derive(Debug)]
+pub(crate) struct HintTable {
+    entries: BTreeMap<PeerKey, LinkHintPreference>,
+    max: usize,
+}
+
+impl HintTable {
+    pub(crate) fn new(config: &NetworkConfig) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            max: usize::try_from(config.max_peers()).unwrap_or(usize::MAX),
+        }
+    }
+
+    /// Sets `peer`'s preference. `Neutral` removes any advice, restoring
+    /// the ordinary rules. A new entry in a full table displaces the
+    /// lowest preference, then the greatest key on a tie.
+    pub(crate) fn set(&mut self, peer: PeerKey, preference: LinkHintPreference) {
+        if preference == LinkHintPreference::Neutral {
+            self.entries.remove(&peer);
+            return;
+        }
+        if !self.entries.contains_key(&peer) && self.entries.len() >= self.max {
+            let victim = self
+                .entries
+                .iter()
+                .min_by(|(a_key, a), (b_key, b)| a.cmp(b).then_with(|| b_key.cmp(a_key)))
+                .map(|(&key, _)| key);
+            if let Some(key) = victim {
+                self.entries.remove(&key);
+            }
+        }
+        self.entries.insert(peer, preference);
+    }
+
+    /// Removes `peer`'s advice, returning whether there was any.
+    pub(crate) fn clear(&mut self, peer: PeerKey) -> bool {
+        self.entries.remove(&peer).is_some()
+    }
+
+    /// The stored preference, or `Neutral` for an unhinted peer.
+    pub(crate) fn get(&self, peer: &PeerKey) -> LinkHintPreference {
+        self.entries.get(peer).copied().unwrap_or_default()
+    }
+
+    /// Whether this node wants to dial `peer` at once, ahead of the
+    /// beacon-hint tie-break delay.
+    pub(crate) fn preferred(&self, peer: &PeerKey) -> bool {
+        self.get(peer) == LinkHintPreference::Prefer
+    }
+
+    /// The active advice, in `PeerKey` order.
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (PeerKey, LinkHintPreference)> + '_ {
+        self.entries
+            .iter()
+            .map(|(&peer, &preference)| (peer, preference))
+    }
+
+    /// The number of active hints.
+    pub(crate) fn tracked(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -389,24 +464,44 @@ impl PeerTable {
             && now.saturating_sub(entry.last_seen) <= IDLE_TIMEOUT
     }
 
-    /// Every peer connectable at `now`, best score first (strong,
-    /// lightly loaded), ties broken by `PeerKey` so a run makes the
-    /// same choices every time. `linked` is the live set of links and
-    /// in-flight attempts, which the table cannot know for a peer it
-    /// has evicted and seen again.
+    /// Every peer connectable at `now`: advisory hints first, then signal
+    /// score (strong, lightly loaded), then `PeerKey`, so a run makes the
+    /// same choices every time. Advice changes only the ordering:
+    /// eligibility, floors, backoffs and the degree cap are the same, so a
+    /// hint can never add a candidate or a slot. `linked` is the live set of
+    /// links and in-flight attempts, which the table cannot know for a peer
+    /// it has evicted and seen again.
+    pub(crate) fn candidates_with_hints(
+        &self,
+        now: Duration,
+        linked: &BTreeMap<PeerKey, LinkId>,
+        hints: &HintTable,
+    ) -> Vec<PeerKey> {
+        let mut out: Vec<(i8, i32, PeerKey)> = self
+            .entries
+            .keys()
+            .filter(|peer| self.eligible(peer, now, linked))
+            .filter_map(|&peer| {
+                self.score_of(&peer)
+                    .map(|score| (hints.get(&peer).rank(), score, peer))
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            b.0.cmp(&a.0)
+                .then_with(|| b.1.cmp(&a.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        out.into_iter().map(|(_, _, peer)| peer).collect()
+    }
+
+    /// The candidates with no advice; tests only.
+    #[cfg(test)]
     pub(crate) fn candidates(
         &self,
         now: Duration,
         linked: &BTreeMap<PeerKey, LinkId>,
     ) -> Vec<PeerKey> {
-        let mut out: Vec<(i32, PeerKey)> = self
-            .entries
-            .keys()
-            .filter(|peer| self.eligible(peer, now, linked))
-            .filter_map(|&peer| self.score_of(&peer).map(|score| (score, peer)))
-            .collect();
-        out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
-        out.into_iter().map(|(_, peer)| peer).collect()
+        self.candidates_with_hints(now, linked, &HintTable::new(&NetworkConfig::default()))
     }
 
     /// The peer's moving-average RSSI, if it has ever been seen.
@@ -1001,6 +1096,88 @@ mod tests {
         assert_eq!(
             table.candidates(Duration::ZERO, &no_links()),
             [strong, loaded, weak]
+        );
+    }
+
+    /// Advice is bounded by `max_peers`: a full table drops the lowest
+    /// preference first and the greatest key on a tie. Neutral removes
+    /// advice, and clearing restores the ordinary rules.
+    #[test]
+    fn hints_are_bounded_and_removable() {
+        let config = NetworkConfig::default().with_max_peers(2).unwrap();
+        let mut hints = HintTable::new(&config);
+        let low = PeerKey::new([1; 16]);
+        let high = PeerKey::new([2; 16]);
+        let newcomer = PeerKey::new([3; 16]);
+        hints.set(low, LinkHintPreference::Prefer);
+        hints.set(high, LinkHintPreference::Deprioritize);
+        assert_eq!(hints.tracked(), 2);
+        // The deprioritized peer makes room for a preferred one.
+        hints.set(newcomer, LinkHintPreference::Prefer);
+        assert_eq!(hints.tracked(), 2);
+        assert_eq!(hints.get(&low), LinkHintPreference::Prefer);
+        assert_eq!(hints.get(&high), LinkHintPreference::Neutral);
+        assert_eq!(hints.get(&newcomer), LinkHintPreference::Prefer);
+
+        // An equal-rank tie evicts the greatest key, whatever the order
+        // the advice arrived in.
+        let mut hints = HintTable::new(&config);
+        hints.set(newcomer, LinkHintPreference::Prefer);
+        hints.set(high, LinkHintPreference::Prefer);
+        hints.set(low, LinkHintPreference::Prefer);
+        assert_eq!(hints.get(&newcomer), LinkHintPreference::Neutral);
+        assert_eq!(hints.get(&high), LinkHintPreference::Prefer);
+        assert_eq!(hints.get(&low), LinkHintPreference::Prefer);
+        assert_eq!(hints.tracked(), 2);
+
+        hints.set(low, LinkHintPreference::Neutral);
+        assert_eq!(hints.get(&low), LinkHintPreference::Neutral);
+        assert!(hints.clear(high));
+        assert!(!hints.clear(high));
+        assert_eq!(hints.tracked(), 0);
+    }
+
+    /// Advice orders candidates before signal score, with `PeerKey`
+    /// breaking ties. It never makes an ineligible peer a candidate.
+    #[test]
+    fn hints_reorder_candidates_deterministically() {
+        let hints = HintTable::new(&NetworkConfig::default());
+        let weak = PeerKey::new([1; 16]);
+        let strong = PeerKey::new([2; 16]);
+        let loaded = PeerKey::new([3; 16]);
+        let mut table = table();
+        table.observe(Duration::ZERO, weak, -80, &raw_with_degree(0));
+        table.observe(Duration::ZERO, strong, -60, &raw_with_degree(0));
+        table.observe(Duration::ZERO, loaded, -60, &raw_with_degree(4));
+        assert_eq!(
+            table.candidates_with_hints(Duration::ZERO, &no_links(), &hints),
+            [strong, loaded, weak]
+        );
+
+        let mut preferred = hints;
+        preferred.set(weak, LinkHintPreference::Prefer);
+        assert_eq!(
+            table.candidates_with_hints(Duration::ZERO, &no_links(), &preferred),
+            [weak, strong, loaded]
+        );
+        // Equal advice falls back to score, then the key.
+        preferred.set(strong, LinkHintPreference::Prefer);
+        assert_eq!(
+            table.candidates_with_hints(Duration::ZERO, &no_links(), &preferred),
+            [strong, weak, loaded]
+        );
+        preferred.set(loaded, LinkHintPreference::Prefer);
+        assert_eq!(
+            table.candidates_with_hints(Duration::ZERO, &no_links(), &preferred),
+            [strong, loaded, weak]
+        );
+        // Deprioritizing pushes a peer behind unhinted ones, never out
+        // of the candidate list.
+        let mut shunned = HintTable::new(&NetworkConfig::default());
+        shunned.set(strong, LinkHintPreference::Deprioritize);
+        assert_eq!(
+            table.candidates_with_hints(Duration::ZERO, &no_links(), &shunned),
+            [loaded, weak, strong]
         );
     }
 

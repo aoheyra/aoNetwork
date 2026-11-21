@@ -18,6 +18,7 @@
 //! | [`release`](Network::release) | as `disconnect` with `Closed`, for an opportunistic link only |
 //! | [`links`](Network::links) | none; lists the up links |
 //! | [`set_idle`](Network::set_idle) | none; switches discovery to [`DiscoveryMode::Quiet`] from the next poll |
+//! | [`set_link_hint`](Network::set_link_hint) / [`clear_link_hint`](Network::clear_link_hint) | none; changes the order peers are dialed in, never the degree cap |
 //!
 //! `LinkUp` comes once per link, after a successful handshake, and
 //! `LinkDown` once after it, when that link ends. Links that never come up
@@ -31,7 +32,9 @@
 //! blacklisting and discovery mode changes are logged too. Nothing is
 //! logged unless the app installs a subscriber.
 //! [`snapshot`](Network::snapshot) returns the node's state and its
-//! cumulative [`Counters`].
+//! cumulative [`Counters`]. Each [`LinkInfo`] and [`LinkSnapshot`] carries
+//! `up_at`, the injected time its handshake finished, so a simulator run can
+//! compare time-to-link with and without advice from the layer above.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::{Future, poll_fn};
@@ -42,13 +45,14 @@ use crate::discovery::{DiscoveryController, Inputs};
 use crate::guard::AbuseGuard;
 use crate::observe::{Counters, Hex, LinkSnapshot, Snapshot};
 use crate::topology::{
-    ClassCounts, Cooldowns, LinkClass, PeerTable, ReadyLink, TopologyPolicy, duplicate_loser,
+    ClassCounts, Cooldowns, HintTable, LinkClass, PeerTable, ReadyLink, TopologyPolicy,
+    duplicate_loser,
 };
 use crate::{
     AdvProfile, AppHello, Beacon, BeaconFlags, CAP_CREDIT, Channel, ConnectError, DisconnectReason,
-    DiscoveryMode, FRAME_VERSION, HandshakeFailure, Hello, Link, LinkAction, LinkEnd, LinkId,
-    LinkMetrics, LinkRole, LinkState, LocalTag, NetworkConfig, PeerKey, RadioState, ScanProfile,
-    SendError, SendOpts, Transport, TransportEvent,
+    DiscoveryMode, FRAME_VERSION, HandshakeFailure, Hello, Link, LinkAction, LinkEnd,
+    LinkHintPreference, LinkId, LinkMetrics, LinkRole, LinkState, LocalTag, NetworkConfig, PeerKey,
+    RadioState, ScanProfile, SendError, SendOpts, Transport, TransportEvent,
 };
 
 /// Something the layer above must know about.
@@ -90,6 +94,9 @@ pub struct LinkInfo {
     pub peer: PeerKey,
     /// Which side opened it.
     pub role: LinkRole,
+    /// The injected time its handshake finished, for time-to-link
+    /// measurements.
+    pub up_at: Duration,
     /// What the link has seen so far.
     pub metrics: LinkMetrics,
 }
@@ -118,6 +125,8 @@ struct Entry {
     /// The tag the peer sent, once the link is up.
     remote_tag: Option<LocalTag>,
     up: bool,
+    /// The injected time the handshake finished, while not yet ended.
+    up_at: Duration,
     /// Everything logged about this link is logged under this span.
     span: tracing::Span,
 }
@@ -171,6 +180,12 @@ struct Entry {
 /// single opportunistic slot until [`release`](Self::release) or a 60 s
 /// dwell, and the peer's hint is then barred from new links for 60 s
 /// unless its digest changes again.
+///
+/// The layer above can advise which peers are worth linking through
+/// [`set_link_hint`](Self::set_link_hint). Such a hint only orders the
+/// candidates this node dials and may skip the initiation delay; `aoMesh`
+/// never chooses a link or enforces a cap. `max_links`, slots and floors
+/// stay under this node's control, whatever advice it is given.
 ///
 /// # Example
 ///
@@ -227,6 +242,8 @@ pub struct Network<T> {
     table: PeerTable,
     /// The slots, scores and eviction rules links are admitted under.
     policy: TopologyPolicy,
+    /// Advisory preferences from the layer above; never a slot or a cap.
+    hints: HintTable,
     /// Strikes and the blacklist.
     guard: AbuseGuard,
     /// The discovery mode and the profiles it asks for.
@@ -247,6 +264,7 @@ impl<T: Transport> Network<T> {
         transport.start();
         let table = PeerTable::new(&config);
         let policy = TopologyPolicy::new(&config);
+        let hints = HintTable::new(&config);
         let guard = AbuseGuard::new(&config);
         let inputs = Inputs {
             degree: 0,
@@ -267,6 +285,7 @@ impl<T: Transport> Network<T> {
             peers: BTreeMap::new(),
             table,
             policy,
+            hints,
             guard,
             discovery,
             idle: false,
@@ -312,6 +331,51 @@ impl<T: Transport> Network<T> {
             flags,
         });
         self.apply_profiles(None);
+    }
+
+    /// Advises this node's link policy about `peer`.
+    ///
+    /// `peer` is the opaque radio key reported by [`LinkInfo::peer`] and
+    /// [`NetworkEvent::LinkUp`]; `aoNetwork` never interprets it and does not
+    /// know a mesh identity from it. [`LinkHintPreference::Prefer`] puts the
+    /// peer ahead of unhinted candidates and dials it without the initiation
+    /// delay, so a contact in range is linked sooner.
+    /// [`LinkHintPreference::Deprioritize`] puts it behind them, and
+    /// [`LinkHintPreference::Neutral`] removes any advice.
+    ///
+    /// This is advisory input from `aoMesh`, not a command. The caller says
+    /// which neighbours it would benefit from; `aoNetwork` alone decides
+    /// whether a link is formed. A hint never reserves a slot, changes the
+    /// admission floor, evicts a link or raises `max_links`.
+    ///
+    /// At most `max_peers` hints are held (64 by default). A new hint for a
+    /// full table displaces the lowest preference, then the greatest
+    /// `PeerKey` on a tie, so the result is deterministic. A hint lasts
+    /// until it is cleared, set to `Neutral`, or displaced; it survives the
+    /// peer going out of range. There is no time-based expiry: the core
+    /// reads no clock and takes `now` only on the operations that need it.
+    /// Advice takes effect at the next dial or candidate selection; links
+    /// already up are left alone.
+    pub fn set_link_hint(&mut self, peer: PeerKey, preference: LinkHintPreference) {
+        self.hints.set(peer, preference);
+    }
+
+    /// Removes the advice for `peer`, returning whether any was held.
+    ///
+    /// The peer then competes under the ordinary topology rules, exactly as
+    /// if it had never been hinted.
+    pub fn clear_link_hint(&mut self, peer: PeerKey) -> bool {
+        self.hints.clear(peer)
+    }
+
+    /// The advice held for `peer`, or [`LinkHintPreference::Neutral`].
+    pub fn link_hint(&self, peer: PeerKey) -> LinkHintPreference {
+        self.hints.get(&peer)
+    }
+
+    /// All advice held, in [`PeerKey`] order, for diagnostics.
+    pub fn link_hints(&self) -> Vec<(PeerKey, LinkHintPreference)> {
+        self.hints.entries().collect()
     }
 
     /// Says whether the node is idle, as the app judges it (in the
@@ -431,7 +495,7 @@ impl<T: Transport> Network<T> {
         }
     }
 
-    /// The up links, in `LinkId` order.
+    /// The up links, in `LinkId` order, with the injected time each came up.
     pub fn links(&self) -> Vec<LinkInfo> {
         self.links
             .iter()
@@ -440,6 +504,7 @@ impl<T: Transport> Network<T> {
                 link,
                 peer: entry.peer,
                 role: entry.role,
+                up_at: entry.up_at,
                 metrics: entry.machine.metrics(),
             })
             .collect()
@@ -447,8 +512,8 @@ impl<T: Transport> Network<T> {
 
     /// The node as it stands at `now`, for a debug screen or a
     /// diagnostics bundle: its discovery mode, every link in any state,
-    /// the size of its peer table, how many peers are blacklisted, and
-    /// its cumulative [`Counters`]. With the `serde` feature it
+    /// the size of its peer table and its hint table, how many peers are
+    /// blacklisted, and its cumulative [`Counters`]. With the `serde` feature it
     /// serializes.
     ///
     /// # Example
@@ -480,6 +545,7 @@ impl<T: Transport> Network<T> {
                     role: entry.role,
                     class: entry.class,
                     state: entry.machine.state(),
+                    up_at: entry.up_at,
                     metrics,
                     queued_bytes: entry.machine.queued_bytes(),
                 }
@@ -490,6 +556,7 @@ impl<T: Transport> Network<T> {
             mode: self.discovery.mode(),
             links,
             peers: self.table.tracked(),
+            hints: self.hints.tracked(),
             blocked: self.guard.blocked(now),
             counters,
         }
@@ -612,7 +679,13 @@ impl<T: Transport> Network<T> {
         let Some(hint) = self.table.hint_of(&peer) else {
             return;
         };
-        if own.hint >= hint && !self.table.waited(&peer, now, self.policy.initiation_delay) {
+        // Advice to prefer a peer lets us dial at once, as if its beacon
+        // hint sorted lower. The peer's beacon, backoff, slots and the
+        // degree cap still decide whether the dial happens at all.
+        if !self.hints.preferred(&peer)
+            && own.hint >= hint
+            && !self.table.waited(&peer, now, self.policy.initiation_delay)
+        {
             return;
         }
         let hello = hello.clone();
@@ -639,7 +712,10 @@ impl<T: Transport> Network<T> {
         let Some(hint) = self.table.hint_of(&peer) else {
             return;
         };
-        if own.hint >= hint && !self.table.waited(&peer, now, self.policy.initiation_delay) {
+        if !self.hints.preferred(&peer)
+            && own.hint >= hint
+            && !self.table.waited(&peer, now, self.policy.initiation_delay)
+        {
             return;
         }
         let hello = hello.clone();
@@ -772,6 +848,7 @@ impl<T: Transport> Network<T> {
                 local_tag,
                 remote_tag: None,
                 up: false,
+                up_at: Duration::ZERO,
                 span,
             },
         );
@@ -843,6 +920,7 @@ impl<T: Transport> Network<T> {
                     }
                     if let Some(entry) = self.links.get_mut(&link) {
                         entry.up = true;
+                        entry.up_at = now;
                         entry.remote_tag = Some(remote.tag);
                         self.table.mark_linked(&entry.peer);
                         tracing::info!(parent: &entry.span, version, "up");
@@ -930,7 +1008,10 @@ impl<T: Transport> Network<T> {
         self.apply_profiles(Some(now));
         // A slot just freed: dial the next candidate now rather than
         // waiting for a sighting to say the neighbourhood changed.
-        for peer in self.table.candidates(now, &self.peers) {
+        for peer in self
+            .table
+            .candidates_with_hints(now, &self.peers, &self.hints)
+        {
             self.connect_to(now, peer);
         }
     }
