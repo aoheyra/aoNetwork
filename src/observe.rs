@@ -111,6 +111,9 @@ pub struct LinkSnapshot {
     pub class: LinkClass,
     /// Where it is in its lifecycle.
     pub state: LinkState,
+    /// The injected time its handshake finished, or `ZERO` while it has
+    /// not come up.
+    pub up_at: Duration,
     /// What it has seen so far.
     pub metrics: LinkMetrics,
     /// Bytes waiting in its send queue.
@@ -130,6 +133,8 @@ pub struct Snapshot {
     pub links: Vec<LinkSnapshot>,
     /// Peers in the peer table.
     pub peers: usize,
+    /// Advisory link hints held for peers.
+    pub hints: usize,
     /// Peers blacklisted at `at`.
     pub blocked: usize,
     /// What the node has done so far.
