@@ -244,6 +244,10 @@ impl Link {
     /// deadline for this payload. Expired frames waiting in the queue are
     /// dropped at `now` before admission, so a deadline cannot hold cap
     /// bytes against a new push.
+    ///
+    /// # Errors
+    ///
+    /// As [`send`](Self::send).
     pub fn send_opts(
         &mut self,
         now: Duration,

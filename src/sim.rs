@@ -307,7 +307,7 @@ fn peer_key(node: NodeId) -> PeerKey {
     PeerKey::new(bytes)
 }
 
-/// SplitMix64: a small, well-distributed seeded generator. Statistical
+/// `SplitMix64`: a small, well-distributed seeded generator. Statistical
 /// quality is irrelevant here; reproducibility is the point.
 #[derive(Debug)]
 struct SplitMix64(u64);

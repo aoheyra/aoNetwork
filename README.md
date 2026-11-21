@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: pre-alpha, M0 (Foundations).** NET-01 (scaffold, naming, MSRV, CI), NET-02 (core types, errors, validated config), NET-04 (frame codec), NET-05 (fragmenter and reassembler), NET-06 (beacon codec), NET-07 (fuzz targets), NET-08 (transport trait), NET-09 (simulator), NET-10 (link state machine), NET-11 (send queue), NET-12 (network facade), NET-13 (keepalive and link metrics), NET-14 (native transport), NET-15 (peer table), NET-16 (topology policy), NET-17 (duplicate-link resolution), NET-18 (inbound abuse protection), NET-19 (discovery modes), NET-20 (simulator scenario suite), NET-21 (send-queue coalescing and expiry), NET-22 (opportunistic links), NET-23 (observability), NET-24 (benchmarks and memory budget) and NET-25 (credit-based flow control) are implemented; NET-03 (native contract and GATT layout) is specified in [`docs/native-contract.md`](docs/native-contract.md); everything else below describes the design in the backlog (issue IDs `NET-xx`) and is not implemented until its issue is closed. See [Roadmap](#roadmap).
+> **Status: v0.1.0.** Every issue from NET-01 to NET-25 is implemented, and the native contract and GATT layout (NET-03) are specified in [`docs/native-contract.md`](docs/native-contract.md). NET-26 (L2CAP CoC) is a spike that waits on measurements from phones; nothing in this README depends on it. See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -225,7 +225,7 @@ CI runs these commands on every PR and on `master`: fmt, clippy (`-D warnings`),
 
 ### Using sibling crates locally
 
-aoNetwork has no sibling dependencies. Downstream crates consume it by git tag; to develop against a local checkout, they use a documented `[patch]` override (see `aoMesh` and `aoheyra` READMEs and APP-01). Do not commit a `[patch]` section.
+aoNetwork has no sibling dependencies. Downstream crates consume it by git tag (`tag = "v0.1.0"`); to develop against a local checkout, they use a documented `[patch]` override (see `aoMesh` and `aoheyra` READMEs and APP-01). Do not commit a `[patch]` section.
 
 ## Roadmap
 

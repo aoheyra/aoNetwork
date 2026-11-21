@@ -1,7 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-11-21
 
+First tagged release, for aoMesh to consume by git tag. Every entry below
+is part of it.
+
+- Docs (NET-27): every fallible `NetworkConfig` setter names the
+  `ConfigError` it returns, and `NativeTransport` and `Network::snapshot`
+  gain examples.
 - Credit-based flow control (NET-25): `Hello.caps` bit `CAP_CREDIT`
   offers credits and a link uses them when both sides set it, which
   `NetworkConfig` does by default (`with_flow_control`). The `Credit`

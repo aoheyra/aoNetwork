@@ -249,6 +249,10 @@ impl NetworkConfig {
     /// Must be `1..=32`: zero links is meaningless, and no phone BLE stack
     /// sustains more than ~20 simultaneous connections, so anything larger
     /// is a unit error.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MaxLinksOutOfRange`] outside the bounds.
     pub fn with_max_links(mut self, max_links: u32) -> Result<Self, ConfigError> {
         self.max_links = max_links;
         self.validate()?;
@@ -261,6 +265,10 @@ impl NetworkConfig {
     /// table evicts its stalest entry, so this bounds memory against an
     /// advertiser flood; the default of 64 leaves room to choose between
     /// several neighbours without holding a crowd.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MaxPeersOutOfRange`] outside the bounds.
     pub fn with_max_peers(mut self, max_peers: u32) -> Result<Self, ConfigError> {
         self.max_peers = max_peers;
         self.validate()?;
@@ -272,6 +280,10 @@ impl NetworkConfig {
     /// Must be within the BLE RSSI domain `-127..=0`; a threshold above
     /// 0 dBm would reject every peer a stack can report, i.e. it is a unit
     /// error, not a policy choice.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MinRssiOutOfRange`] outside the bounds.
     pub fn with_min_rssi(mut self, min_rssi: i16) -> Result<Self, ConfigError> {
         self.min_rssi = min_rssi;
         self.validate()?;
@@ -283,6 +295,10 @@ impl NetworkConfig {
     /// Must be greater than zero. The bound is deliberately only structural:
     /// time is injected in this crate, so simulations legitimately use
     /// sub-millisecond values.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::HandshakeTimeoutZero`] for zero.
     pub fn with_handshake_timeout(
         mut self,
         handshake_timeout: Duration,
@@ -297,6 +313,10 @@ impl NetworkConfig {
     /// Measured from the frame's first chunk; later chunks do not extend it.
     /// Must be greater than zero, for the same reason as
     /// [`with_handshake_timeout`](Self::with_handshake_timeout).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ReassemblyTimeoutZero`] for zero.
     pub fn with_reassembly_timeout(
         mut self,
         reassembly_timeout: Duration,
@@ -310,6 +330,10 @@ impl NetworkConfig {
     ///
     /// Must be greater than zero, for the same reason as
     /// [`with_handshake_timeout`](Self::with_handshake_timeout).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::KeepaliveIntervalZero`] for zero.
     pub fn with_keepalive_interval(
         mut self,
         keepalive_interval: Duration,
@@ -323,6 +347,10 @@ impl NetworkConfig {
     ///
     /// Must be at least 1: with 0 the link would close before any pong could
     /// be counted, making keepalive a busy-loop.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MaxMissedPongsZero`] for zero.
     pub fn with_max_missed_pongs(mut self, max_missed_pongs: u8) -> Result<Self, ConfigError> {
         self.max_missed_pongs = max_missed_pongs;
         self.validate()?;
@@ -335,6 +363,12 @@ impl NetworkConfig {
     /// the reassembly buffer and the per-link queue bounded on a phone:
     /// worst-case memory is `max_links x queue_cap`, chosen by the app but
     /// capped here.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MaxFrameOutOfRange`] outside the bounds,
+    /// [`ConfigError::QueueCapOutOfRange`] above `queue_cap`, or
+    /// [`ConfigError::ReceiveWindowOutOfRange`] above a receive window.
     pub fn with_max_frame(mut self, max_frame: usize) -> Result<Self, ConfigError> {
         self.max_frame = max_frame;
         self.validate()?;
@@ -346,6 +380,11 @@ impl NetworkConfig {
     /// Must be at least `max_frame` (or the current `max_frame` is lowered
     /// first), at most 1 MiB, and no less than the sum of the channel caps
     /// (lower those first).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::QueueCapOutOfRange`] outside the bounds, or
+    /// [`ConfigError::ChannelCapsOverQueueCap`] below the channel caps' sum.
     pub fn with_queue_cap(mut self, queue_cap: usize) -> Result<Self, ConfigError> {
         self.queue_cap = queue_cap;
         self.validate()?;
@@ -358,6 +397,11 @@ impl NetworkConfig {
     /// four caps together must fit in `queue_cap`, so a flood on one
     /// channel never takes another's room. Each payload counts as its
     /// encoded `Data` frame plus [`SendQueue::ENTRY_COST`].
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ChannelCapTooSmall`] below 128 B, or
+    /// [`ConfigError::ChannelCapsOverQueueCap`] if the caps no longer fit.
     pub fn with_channel_cap(mut self, channel: Channel, cap: usize) -> Result<Self, ConfigError> {
         self.channel_caps[channel.index()] = cap;
         self.validate()?;
@@ -371,6 +415,10 @@ impl NetworkConfig {
     /// disconnected with
     /// [`DisconnectReason::AbuseDetected`](crate::DisconnectReason::AbuseDetected)
     /// and blacklisted. Every frame counts, `Ping` included.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::FrameLimitOutOfRange`] outside the bounds.
     pub fn with_frame_limit(mut self, limit: RateLimit) -> Result<Self, ConfigError> {
         self.frame_limit = limit;
         self.validate()?;
@@ -383,6 +431,10 @@ impl NetworkConfig {
     /// The rate must be in `1..=16 Mi` and the burst in `517 B..=16 MiB`,
     /// so one chunk at the largest MTU always fits. A peer that sends
     /// faster is treated as for [`with_frame_limit`](Self::with_frame_limit).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ByteLimitOutOfRange`] outside the bounds.
     pub fn with_byte_limit(mut self, limit: RateLimit) -> Result<Self, ConfigError> {
         self.byte_limit = limit;
         self.validate()?;
@@ -393,6 +445,10 @@ impl NetworkConfig {
     ///
     /// A strike is a link closed for a malformed frame, a broken chunk
     /// stream or an oversize `Hello`. Must be at least 1.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MaxStrikesZero`] for zero.
     pub fn with_max_strikes(mut self, max_strikes: u8) -> Result<Self, ConfigError> {
         self.max_strikes = max_strikes;
         self.validate()?;
@@ -403,6 +459,10 @@ impl NetworkConfig {
     /// strike is remembered after the last one (default: 10 min).
     ///
     /// Must be greater than zero.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::BlacklistDurationZero`] for zero.
     pub fn with_blacklist_duration(
         mut self,
         blacklist_duration: Duration,
@@ -419,6 +479,10 @@ impl NetworkConfig {
     /// scan window, is requested sooner than this after the last. Android
     /// throttles apps that start scans more than five times in 30 s, which
     /// the default keeps well clear of. Must be greater than zero.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::DiscoveryIntervalZero`] for zero.
     pub fn with_discovery_interval(
         mut self,
         discovery_interval: Duration,
@@ -432,6 +496,10 @@ impl NetworkConfig {
     /// on). A link uses it only when both `Hello`s set
     /// [`CAP_CREDIT`](crate::CAP_CREDIT); otherwise only the send-queue
     /// caps limit what a peer is sent.
+    ///
+    /// # Errors
+    ///
+    /// Never; it returns `Result` to chain like the other setters.
     pub fn with_flow_control(mut self, on: bool) -> Result<Self, ConfigError> {
         self.flow_control = on;
         self.validate()?;
@@ -446,6 +514,10 @@ impl NetworkConfig {
     /// send always fits; raise the windows before `max_frame`. A peer
     /// that sends past its window is closed with
     /// [`DisconnectReason::ProtocolViolation`](crate::DisconnectReason::ProtocolViolation).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::ReceiveWindowOutOfRange`] outside the bounds.
     pub fn with_receive_window(
         mut self,
         channel: Channel,

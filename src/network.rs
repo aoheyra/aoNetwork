@@ -450,6 +450,22 @@ impl<T: Transport> Network<T> {
     /// the size of its peer table, how many peers are blacklisted, and
     /// its cumulative [`Counters`]. With the `serde` feature it
     /// serializes.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # #[cfg(feature = "sim")] {
+    /// use std::time::Duration;
+    /// use ao_network::{Network, NetworkConfig, SimConfig, SimNode, SimWorld};
+    ///
+    /// let world = SimWorld::new(SimConfig::default());
+    /// let radio = world.add_node(SimNode::default()).unwrap();
+    /// let net = Network::new(NetworkConfig::default(), radio);
+    /// let snapshot = net.snapshot(Duration::ZERO);
+    /// assert!(snapshot.links.is_empty());
+    /// assert_eq!(snapshot.counters.links_up, 0);
+    /// # }
+    /// ```
     pub fn snapshot(&self, now: Duration) -> Snapshot {
         let mut counters = self.counters;
         let links = self

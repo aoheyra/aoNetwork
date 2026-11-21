@@ -168,6 +168,36 @@ impl NativeConfig {
 }
 
 /// [`Transport`] over a Kotlin [`NativeSink`].
+///
+/// # Example
+///
+/// The binding layer hands Rust a sink that forwards to Kotlin, and gives
+/// Kotlin the handle to report back through:
+///
+/// ```
+/// use std::sync::Arc;
+/// use ao_network::{
+///     AdvertiseMode, LinkId, NativeConfig, NativeEvents, NativeSink, NativeTransport, Network,
+///     NetworkConfig, PeerKey, RadioState, ScanMode, TransportCaps,
+/// };
+///
+/// /// Stands in for the Kotlin shim; each call would cross the FFI.
+/// struct Shim;
+/// impl NativeSink for Shim {
+///     fn set_advertising(&self, _: Option<[u8; 16]>, _: AdvertiseMode) {}
+///     fn set_scanning(&self, _: Option<ScanMode>) {}
+///     fn connect(&self, _: LinkId, _: PeerKey) {}
+///     fn write(&self, _: LinkId, _: Vec<u8>) {}
+///     fn disconnect(&self, _: LinkId) {}
+/// }
+///
+/// let caps = TransportCaps { can_advertise: true, max_mtu: 517, max_links: 5 };
+/// let (transport, handle) = NativeTransport::new(Arc::new(Shim), NativeConfig::new(caps));
+/// let net = Network::new(NetworkConfig::default(), transport);
+/// // Kotlin reports through the handle, from any thread.
+/// handle.on_radio_state(RadioState::Ready);
+/// # drop(net);
+/// ```
 #[derive(Debug)]
 pub struct NativeTransport {
     sink: Arc<dyn NativeSink>,

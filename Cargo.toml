@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["bluetooth", "ble", "mesh", "networking"]
 categories = ["network-programming"]
 license = "MIT OR Apache-2.0"
-# Pre-alpha: publishing waits for v0.1.0 (NET-27).
+# Distributed by git tag (NET-27); not published to crates.io.
 publish = false
 
 # The benches are criterion targets; the library has none, and libtest's
