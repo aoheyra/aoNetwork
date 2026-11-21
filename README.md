@@ -224,15 +224,13 @@ cargo run --example sim_chat
 # The scenario suite on N seeded topologies instead of CI's fixed cases
 AO_SCENARIO_SEEDS=64 cargo test --release --test scenarios
 
-# Fuzzing (nightly toolchain): beacon_decode, frame_decode, reassembler_push.
-# New inputs land in the ignored fuzz/corpus; fuzz/seeds is checked in,
-# and each crash input is added there once fixed.
-cargo +nightly fuzz run frame_decode fuzz/corpus/frame_decode fuzz/seeds/frame_decode
+# Fuzzing is centralised in aoheyra-fuzz; see its README for targets and commands
+# https://github.com/aoheyra/aoheyra-fuzz
 ```
 
 Tests are `cargo test` only: Miri and the instruction counts run in CI, and callgrind profiling is opt-in.
 
-CI runs these commands on every PR and on `master`: fmt, clippy (`-D warnings`), tests (Linux, macOS, Windows; default and all features), `cargo doc` (`-D warnings`), cargo-deny, an MSRV build, miri and `cargo package`. On every PR a benchmark job counts the instructions each bench workload (codec, send queue, fragmentation and reassembly) executes under callgrind, for the base and the head, and fails if any grows by more than 5%; the counts are exact, so the limit cannot flake. The memory budget is checked by `cargo test`. A scheduled fuzzer runs every target every Sunday 00:00 IST (an equal share of 45 minutes within a 60-minute job), starting from the seeds checked in under `fuzz/seeds/`, and callgrind profiling runs on manual dispatch (`.github/workflows/`). The scenario suite (`tests/scenarios.rs`) runs with `cargo test` on fixed cases of 5, 23 and 50 nodes, under 2 minutes; every night at 02:00 IST it runs on 512 seeded topologies of 5 to 50 nodes. It checks the degree cap on every tick, one link per pair after a simultaneous start, churn, partition and heal, full-node avoidance, eviction hysteresis and an abusive peer; a failure names the seed and size it replays from.
+CI runs these commands on every PR and on `master`: fmt, clippy (`-D warnings`), tests (Linux, macOS, Windows; default and all features), `cargo doc` (`-D warnings`), cargo-deny, an MSRV build, miri and `cargo package`. On every PR a benchmark job counts the instructions each bench workload (codec, send queue, fragmentation and reassembly) executes under callgrind, for the base and the head, and fails if any grows by more than 5%; the counts are exact, so the limit cannot flake. The memory budget is checked by `cargo test`. The weekly 90-minute fuzz campaign runs in [aoheyra-fuzz](https://github.com/aoheyra/aoheyra-fuzz) from Saturday 18:30 UTC (Sunday 00:00 IST), starting from the seeds kept there; callgrind profiling runs on manual dispatch (`.github/workflows/`). The scenario suite (`tests/scenarios.rs`) runs with `cargo test` on fixed cases of 5, 23 and 50 nodes, under 2 minutes; every night at 02:00 IST it runs on 512 seeded topologies of 5 to 50 nodes. It checks the degree cap on every tick, one link per pair after a simultaneous start, churn, partition and heal, full-node avoidance, eviction hysteresis and an abusive peer; a failure names the seed and size it replays from.
 
 ### Using sibling crates locally
 
