@@ -11,6 +11,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: aoheyra/aoNetwork-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   style:
     name: Style
@@ -106,6 +110,7 @@ jobs:
         run: cargo miri test --all-features
 
   package:
+    if: github.repository == 'aoheyra/aoNetwork' || github.event_name == 'pull_request'
     name: Package
     runs-on: ubuntu-latest
     steps:

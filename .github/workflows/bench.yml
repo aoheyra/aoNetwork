@@ -6,8 +6,13 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: aoheyra/aoNetwork-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   instructions:
+    if: github.repository == 'aoheyra/aoNetwork' || github.event_name == 'pull_request'
     name: Instruction counts
     runs-on: ubuntu-latest
     timeout-minutes: 30
