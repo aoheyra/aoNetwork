@@ -33,10 +33,12 @@ const TICK: Duration = Duration::from_millis(50);
 const FLOOD_TICK: Duration = Duration::from_millis(10);
 /// Radio range, in the units of node positions.
 const RADIUS: i64 = 100;
-/// Long enough for every opportunistic link (60 s dwell) and its cooldown
-/// (60 s) to have given way to a lasting link, twice over, after the
-/// longest connect backoff.
-const SETTLE: Duration = Duration::from_secs(300);
+/// Long enough for a node to work through the first sightings of all its
+/// neighbours: an opportunistic link holds its slot for a 60 s dwell and
+/// bars its peer for another 60 s, so a node with several new neighbours
+/// can need several such cycles before ordinary links settle. Seed
+/// `0x118` needed the seventh cycle in a 36-node mesh.
+const SETTLE: Duration = Duration::from_secs(900);
 /// The fixed cases CI runs: the smallest and largest sizes, and one in
 /// between.
 const CI_CASES: [(u64, usize); 3] = [(0x20A, 5), (0x20B, 23), (0x20C, 50)];
@@ -393,6 +395,18 @@ fn a_simultaneous_start_settles_into_one_link_per_pair() {
         let held: usize = (0..n).map(|i| mesh.nodes[i].net.links().len()).sum();
         assert_eq!(ups(&events) - downs(&events).len(), held, "{}", mesh.case);
     }
+}
+
+/// Regression for the nightly seed that exposed too short a settle:
+/// six-neighbour meshes work through several opportunistic dwell and
+/// cooldown cycles before the lasting topology appears. With the old
+/// 300 s settle, nodes 3 and 9 in this seed were still cooling and this
+/// assertion failed.
+#[test]
+fn a_dense_mesh_settles_after_all_opportunistic_cycles() {
+    let mut mesh = Mesh::new(0x118, 36);
+    mesh.run(SETTLE);
+    mesh.assert_settled();
 }
 
 /// Degree-cap invariant: with a node moving every second for two
