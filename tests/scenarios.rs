@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use ao_network::{
     AdvProfile, AppHello, Beacon, BeaconFlags, Channel, DisconnectReason, FRAME_VERSION,
-    Fragmenter, Frame, Hello, LinkId, LinkRole, LocalTag, Network, NetworkConfig, NetworkEvent,
-    PeerKey, ScanProfile, SimConfig, SimNode, SimTransport, SimWorld, Transport, TransportCaps,
-    TransportEvent,
+    Fragmenter, Frame, Hello, LinkClass, LinkId, LinkRole, LocalTag, Network, NetworkConfig,
+    NetworkEvent, PeerKey, ScanProfile, SimConfig, SimNode, SimTransport, SimWorld, Transport,
+    TransportCaps, TransportEvent,
 };
 
 /// How often the networks are polled while settling. The simulator runs
@@ -409,6 +409,32 @@ fn a_dense_mesh_settles_after_all_opportunistic_cycles() {
     mesh.assert_settled();
 }
 
+/// Regression for the nightly seed where a degraded-peer holder also had
+/// a time-bounded opportunistic slot. Counting that slot as a stable link
+/// made the eviction assertion fire even though the stable count was at
+/// the target and the degraded peer was correctly kept.
+#[test]
+fn an_opportunistic_slot_does_not_trigger_eviction() {
+    let n = 47;
+    let mut mesh = Mesh::new(0x12c, n);
+    mesh.run(SETTLE);
+    let weak = (0..n).max_by_key(|&i| (mesh.peers_of(i).len(), i)).unwrap();
+    let holders = (0..n).filter(|&i| mesh.linked(i, weak)).count();
+    mesh.world.set_rssi(mesh.radio(weak), -95);
+    mesh.run(Duration::from_secs(30));
+    for i in (0..n).filter(|&i| mesh.linked(i, weak)) {
+        let held = mesh.nodes[i]
+            .net
+            .snapshot(mesh.world.now())
+            .links
+            .iter()
+            .filter(|link| link.class != LinkClass::Opportunistic)
+            .count();
+        assert!(held <= mesh.target, "node {i} holds {held} stable links");
+    }
+    assert!(holders > 0);
+}
+
 /// Degree-cap invariant: with a node moving every second for two
 /// minutes, no node ever holds more than `max_links` links (checked every
 /// tick), and once the churn stops the mesh settles again.
@@ -496,10 +522,19 @@ fn links_are_kept_until_a_degraded_peer_is_over_the_target() {
         mesh.world.set_rssi(node, -95);
         mesh.run(Duration::from_secs(30));
         for i in (0..n).filter(|&i| mesh.linked(i, weak)) {
-            let held = mesh.nodes[i].net.links().len();
+            // Eviction keeps the stable count at the target. An
+            // opportunistic slot is a separate, time-bounded reservation,
+            // so its holder can be over the target without owing an eviction.
+            let held = mesh.nodes[i]
+                .net
+                .snapshot(mesh.world.now())
+                .links
+                .iter()
+                .filter(|link| link.class != LinkClass::Opportunistic)
+                .count();
             assert!(
                 held <= mesh.target,
-                "{}: node {i} holds {held} links and kept the degraded peer",
+                "{}: node {i} holds {held} stable links and kept the degraded peer",
                 mesh.case
             );
         }
