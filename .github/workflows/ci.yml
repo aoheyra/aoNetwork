@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, closed]
   push:
     branches: [master]
   merge_group:
@@ -12,11 +13,12 @@ env:
   CARGO_TERM_COLOR: always
 
 concurrency:
-  group: aoheyra/aoNetwork-${{ github.workflow }}-${{ github.ref }}
+  group: aoheyra/aoNetwork-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   style:
+    if: github.event.action != 'closed'
     name: Style
     runs-on: ubuntu-latest
     steps:
@@ -30,6 +32,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
+    if: github.event.action != 'closed'
     name: Clippy
     runs-on: ubuntu-latest
     steps:
@@ -43,6 +46,7 @@ jobs:
         run: cargo clippy --all-targets --all-features -- -D warnings
 
   docs:
+    if: github.event.action != 'closed'
     name: Docs
     runs-on: ubuntu-latest
     steps:
@@ -56,6 +60,7 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   tests:
+    if: github.event.action != 'closed'
     name: Tests
     strategy:
       fail-fast: false
@@ -73,6 +78,7 @@ jobs:
         run: cargo test --all-features
 
   msrv:
+    if: github.event.action != 'closed'
     name: MSRV
     runs-on: ubuntu-latest
     steps:
@@ -86,6 +92,7 @@ jobs:
         run: cargo build --all-features
 
   deny:
+    if: github.event.action != 'closed'
     name: cargo-deny
     runs-on: ubuntu-latest
     steps:
@@ -97,6 +104,7 @@ jobs:
           command: check
 
   miri:
+    if: github.event.action != 'closed'
     name: Miri
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +118,7 @@ jobs:
         run: cargo miri test --all-features
 
   package:
-    if: github.repository == 'aoheyra/aoNetwork' || github.event_name == 'pull_request'
+    if: (github.repository == 'aoheyra/aoNetwork' || github.event_name == 'pull_request') && github.event.action != 'closed'
     name: Package
     runs-on: ubuntu-latest
     steps:
