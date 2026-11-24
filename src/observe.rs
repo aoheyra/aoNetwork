@@ -114,6 +114,10 @@ pub struct LinkSnapshot {
     /// The injected time its handshake finished, or `ZERO` while it has
     /// not come up.
     pub up_at: Duration,
+    /// The radio channel carrying this link's frames (NET-26).
+    pub transport: crate::LinkTransport,
+    /// Whether both `Hello`s advertised L2CAP CoC support (NET-26).
+    pub l2cap_negotiated: bool,
     /// What it has seen so far.
     pub metrics: LinkMetrics,
     /// Bytes waiting in its send queue.

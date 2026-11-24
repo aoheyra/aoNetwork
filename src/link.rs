@@ -10,11 +10,12 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use crate::codec::data_frame_len;
+use crate::codec::fragment::{ATT_OVERHEAD, CHUNK_OVERHEAD};
 use crate::guard::TokenBucket;
 use crate::{
     CAP_CREDIT, Channel, ConnectError, DisconnectReason, Fragmenter, Frame, FrameError,
-    HandshakeFailure, Hello, LinkMetrics, MAX_MTU, MIN_MTU, NetworkConfig, Reassembler, SendError,
-    SendOpts, SendQueue, TransportEvent,
+    HandshakeFailure, Hello, LinkMetrics, LinkTransport, MAX_MTU, MIN_MTU, NetworkConfig,
+    Reassembler, SendError, SendOpts, SendQueue, TransportEvent,
 };
 
 /// Where a link is in its lifecycle.
@@ -98,6 +99,8 @@ pub struct Link {
     max_missed_pongs: u8,
     state: LinkState,
     mtu: u16,
+    /// Packet headers charged against the MTU on this transport.
+    chunk_overhead: usize,
     deadline: Duration,
     reassembler: Reassembler,
     /// Chunks of the frames being written, in send order.
@@ -150,6 +153,16 @@ impl Link {
     /// [`LinkState::Connecting`]; feed it the transport's `Connected`
     /// (outbound or inbound) to begin the handshake.
     pub fn new(config: &NetworkConfig, local: Hello) -> Self {
+        Self::with_transport(config, local, LinkTransport::Gatt)
+    }
+
+    /// A link on `transport`. An L2CAP CoC packet has no ATT header, so
+    /// only the chunk header is charged against its MTU (NET-26).
+    pub fn with_transport(config: &NetworkConfig, local: Hello, transport: LinkTransport) -> Self {
+        let chunk_overhead = match transport {
+            LinkTransport::Gatt => ATT_OVERHEAD + CHUNK_OVERHEAD,
+            LinkTransport::L2capCoc => CHUNK_OVERHEAD,
+        };
         Self {
             local,
             max_frame: config.max_frame(),
@@ -158,6 +171,7 @@ impl Link {
             max_missed_pongs: config.max_missed_pongs(),
             state: LinkState::Connecting,
             mtu: 0,
+            chunk_overhead,
             deadline: Duration::ZERO,
             reassembler: Reassembler::new(config),
             outbox: VecDeque::new(),
@@ -533,7 +547,9 @@ impl Link {
 
     fn enqueue(&mut self, frame: &Frame) {
         // Cannot fail: the MTU is checked whenever it changes.
-        if let Ok(chunks) = Fragmenter::new(&frame.encode(), self.mtu) {
+        if let Ok(chunks) =
+            Fragmenter::with_overhead(&frame.encode(), self.mtu, self.chunk_overhead)
+        {
             self.outbox.extend(chunks);
         }
     }

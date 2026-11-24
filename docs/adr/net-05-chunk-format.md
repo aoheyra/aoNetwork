@@ -4,8 +4,11 @@ Status: proposed for maintainer review.
 
 ## Layout
 
-An encoded frame is split into chunks, one per ATT value (at most `mtu - 3`
-bytes). Each chunk is a 1-byte header followed by 1 to `mtu - 4` payload bytes.
+An encoded frame is split into chunks, one per radio packet. Over GATT one
+ATT value carries at most `mtu - 3` bytes, so a chunk holds 1 to `mtu - 4`
+payload bytes. Over L2CAP CoC (NET-26) one packet carries `mtu` bytes, so a
+chunk holds 1 to `mtu - 1` payload bytes. The chunk header is the same on
+both transports: reassembly never depends on the radio channel.
 
 | Bits | Field |
 |---|---|
@@ -36,5 +39,5 @@ every push and by `poll_timeout`, which the link calls from its timer. Time is
 supplied by the caller.
 
 The 3-bit sequence detects reordering and short gaps. It cannot detect the loss
-of exactly eight consecutive chunks; BLE delivers ATT values in order on a live
-link, and the frame decoder rejects a malformed result.
+of exactly eight consecutive chunks; both GATT and CoC deliver packets in
+order on a live link, and the frame decoder rejects a malformed result.

@@ -1,12 +1,14 @@
 //! The seam between the link layer and a radio.
 //!
 //! The link layer runs against [`Transport`] only. `SimWorld` (NET-09)
-//! implements it in memory; `NativeTransport` (NET-14) implements it over the
-//! Kotlin BLE shim described in `docs/native-contract.md`.
+//! implements it in memory; `NativeTransport` (NET-14) and `L2capTransport`
+//! (NET-26) implement it over the Kotlin BLE shim described in
+//! `docs/native-contract.md`. A transport names its radio channel through
+//! [`Transport::link_transport`], which defaults to GATT.
 
 use std::task::{Context, Poll};
 
-use crate::{BEACON_LEN, ConnectError, DisconnectReason, LinkId, LinkRole, PeerKey};
+use crate::{BEACON_LEN, ConnectError, DisconnectReason, LinkId, LinkRole, LinkTransport, PeerKey};
 
 /// A radio the link layer can drive.
 ///
@@ -85,6 +87,13 @@ pub trait Transport: Send {
     /// What this radio can do. Constant for the transport's lifetime.
     fn caps(&self) -> TransportCaps;
 
+    /// The channel this transport carries frames on. The link layer
+    /// advertises it in `Hello.caps` so both ends know what is in use.
+    /// Transports that predate NET-26 carry GATT.
+    fn link_transport(&self) -> LinkTransport {
+        LinkTransport::Gatt
+    }
+
     /// Begins producing events, starting with the current
     /// [`TransportEvent::RadioState`].
     fn start(&mut self);
@@ -106,8 +115,9 @@ pub trait Transport: Send {
     /// Closes `link`, whether connecting or connected.
     fn disconnect(&mut self, link: LinkId);
 
-    /// Sends one chunk of at most `mtu - 3` bytes on `link`. Only valid while
-    /// the link holds its write credit (see the trait rules).
+    /// Sends one chunk on `link`: at most `mtu - 3` bytes over GATT, or
+    /// `mtu` over CoC. Only valid while the link holds its write credit
+    /// (see the trait rules).
     fn write(&mut self, link: LinkId, chunk: Vec<u8>);
 
     /// Returns the next event, or registers `cx`'s waker and returns
@@ -144,7 +154,8 @@ pub enum TransportEvent {
         peer: PeerKey,
         /// Who opened the link.
         role: LinkRole,
-        /// Negotiated ATT MTU, 23..=517.
+        /// Negotiated packet size: the ATT MTU over GATT or the CoC MTU
+        /// over L2CAP, 23..=517.
         mtu: u16,
     },
     /// An outbound link never came up. Terminal for `link`.
@@ -154,11 +165,11 @@ pub enum TransportEvent {
         /// Why it failed.
         error: ConnectError,
     },
-    /// The ATT MTU of a connected link changed.
+    /// The packet size of a connected link changed.
     MtuChanged {
         /// The link.
         link: LinkId,
-        /// New ATT MTU, 23..=517.
+        /// New packet size, 23..=517.
         mtu: u16,
     },
     /// One chunk arrived, exactly as sent: never split or merged.
@@ -207,7 +218,8 @@ pub struct TransportCaps {
     /// Can advertise and accept inbound links. Some phones are
     /// central-only.
     pub can_advertise: bool,
-    /// Largest ATT MTU the radio will negotiate.
+    /// Largest packet size the radio will negotiate: the ATT MTU over
+    /// GATT or the CoC MTU over L2CAP.
     pub max_mtu: u16,
     /// Most simultaneous links the radio sustains.
     pub max_links: u32,

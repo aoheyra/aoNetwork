@@ -53,7 +53,13 @@ fn run(world: &SimWorld, nets: &mut [Network<SimTransport>], duration: Duration)
 }
 
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            use std::fmt::Write as _;
+            write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+            out
+        })
 }
 
 /// Done when: a simulator run produces a readable log. Two nodes link up,

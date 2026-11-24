@@ -49,10 +49,11 @@ use crate::topology::{
     duplicate_loser,
 };
 use crate::{
-    AdvProfile, AppHello, Beacon, BeaconFlags, CAP_CREDIT, Channel, ConnectError, DisconnectReason,
-    DiscoveryMode, FRAME_VERSION, HandshakeFailure, Hello, Link, LinkAction, LinkEnd,
-    LinkHintPreference, LinkId, LinkMetrics, LinkRole, LinkState, LocalTag, NetworkConfig, PeerKey,
-    RadioState, ScanProfile, SendError, SendOpts, Transport, TransportEvent,
+    AdvProfile, AppHello, Beacon, BeaconFlags, CAP_CREDIT, CAP_L2CAP, Channel, ConnectError,
+    DisconnectReason, DiscoveryMode, FRAME_VERSION, HandshakeFailure, Hello, Link, LinkAction,
+    LinkEnd, LinkHintPreference, LinkId, LinkMetrics, LinkRole, LinkState, LinkTransport, LocalTag,
+    NetworkConfig, PeerKey, RadioState, ScanProfile, SendError, SendOpts, Transport,
+    TransportEvent,
 };
 
 /// Something the layer above must know about.
@@ -97,6 +98,10 @@ pub struct LinkInfo {
     /// The injected time its handshake finished, for time-to-link
     /// measurements.
     pub up_at: Duration,
+    /// The radio channel carrying this link's frames (NET-26).
+    pub transport: LinkTransport,
+    /// Whether both `Hello`s advertised L2CAP CoC support (NET-26).
+    pub l2cap_negotiated: bool,
     /// What the link has seen so far.
     pub metrics: LinkMetrics,
 }
@@ -127,6 +132,10 @@ struct Entry {
     up: bool,
     /// The injected time the handshake finished, while not yet ended.
     up_at: Duration,
+    /// The radio channel this link was opened on.
+    transport: LinkTransport,
+    /// Set once the peer's `Hello` confirms CoC support.
+    l2cap_negotiated: bool,
     /// Everything logged about this link is logged under this span.
     span: tracing::Span,
 }
@@ -307,10 +316,16 @@ impl<T: Transport> Network<T> {
         self.hello = Some(Hello {
             proto_min: FRAME_VERSION,
             proto_max: FRAME_VERSION,
-            caps: if self.config.flow_control() {
-                CAP_CREDIT
-            } else {
-                0
+            caps: {
+                let mut caps = if self.config.flow_control() {
+                    CAP_CREDIT
+                } else {
+                    0
+                };
+                if self.transport.link_transport() == LinkTransport::L2capCoc {
+                    caps |= CAP_L2CAP;
+                }
+                caps
             },
             // At most 1 MiB, validated by the config.
             max_frame: u32::try_from(self.config.max_frame()).unwrap_or(u32::MAX),
@@ -505,6 +520,8 @@ impl<T: Transport> Network<T> {
                 peer: entry.peer,
                 role: entry.role,
                 up_at: entry.up_at,
+                transport: entry.transport,
+                l2cap_negotiated: entry.l2cap_negotiated,
                 metrics: entry.machine.metrics(),
             })
             .collect()
@@ -547,6 +564,8 @@ impl<T: Transport> Network<T> {
                     class: entry.class,
                     state: entry.machine.state(),
                     up_at: entry.up_at,
+                    transport: entry.transport,
+                    l2cap_negotiated: entry.l2cap_negotiated,
                     metrics,
                     queued_bytes: entry.machine.queued_bytes(),
                 }
@@ -841,7 +860,7 @@ impl<T: Transport> Network<T> {
         self.links.insert(
             link,
             Entry {
-                machine: Link::new(&self.config, hello),
+                machine: Link::with_transport(&self.config, hello, self.transport.link_transport()),
                 peer,
                 role,
                 class,
@@ -850,6 +869,8 @@ impl<T: Transport> Network<T> {
                 remote_tag: None,
                 up: false,
                 up_at: Duration::ZERO,
+                transport: self.transport.link_transport(),
+                l2cap_negotiated: false,
                 span,
             },
         );
@@ -923,6 +944,10 @@ impl<T: Transport> Network<T> {
                         entry.up = true;
                         entry.up_at = now;
                         entry.remote_tag = Some(remote.tag);
+                        entry.l2cap_negotiated = self
+                            .hello
+                            .as_ref()
+                            .is_some_and(|hello| hello.caps & remote.caps & CAP_L2CAP != 0);
                         self.table.mark_linked(&entry.peer);
                         tracing::info!(parent: &entry.span, version, "up");
                     }

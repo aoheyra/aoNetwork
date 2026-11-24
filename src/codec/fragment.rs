@@ -20,8 +20,12 @@ pub const MAX_MTU: u16 = 517;
 const START: u8 = 0x80;
 const END: u8 = 0x40;
 const SEQ: u8 = 0x07;
-/// ATT header (3) plus the chunk header (1).
-const OVERHEAD: usize = 4;
+/// ATT header bytes; absent on an L2CAP CoC (NET-26).
+pub const ATT_OVERHEAD: usize = 3;
+/// One-byte chunk header, present on both transports.
+pub(crate) const CHUNK_OVERHEAD: usize = 1;
+/// GATT overhead: ATT header plus the chunk header.
+const OVERHEAD: usize = ATT_OVERHEAD + CHUNK_OVERHEAD;
 
 /// Splits one encoded frame into chunks for a link with the given MTU.
 ///
@@ -57,12 +61,28 @@ impl<'a> Fragmenter<'a> {
     /// [`FragmentError::InvalidMtu`] if `mtu` is outside
     /// [`MIN_MTU`]`..=`[`MAX_MTU`].
     pub fn new(frame: &'a [u8], mtu: u16) -> Result<Self, FragmentError> {
-        if !(MIN_MTU..=MAX_MTU).contains(&mtu) {
+        Self::with_overhead(frame, mtu, OVERHEAD)
+    }
+
+    /// Splits `frame` for a transport whose packet loses `overhead` bytes
+    /// to headers. GATT loses three ATT bytes; an L2CAP CoC
+    /// loses none, keeping only the chunk header (NET-26).
+    ///
+    /// # Errors
+    ///
+    /// [`FragmentError::InvalidMtu`] if `mtu` is out of range or cannot
+    /// hold the headers and a byte of payload.
+    pub fn with_overhead(
+        frame: &'a [u8],
+        mtu: u16,
+        overhead: usize,
+    ) -> Result<Self, FragmentError> {
+        if !(MIN_MTU..=MAX_MTU).contains(&mtu) || usize::from(mtu) <= overhead {
             return Err(FragmentError::InvalidMtu { mtu });
         }
         Ok(Self {
             rest: frame,
-            payload_cap: usize::from(mtu) - OVERHEAD,
+            payload_cap: usize::from(mtu) - overhead,
             seq: 0,
             started: false,
         })

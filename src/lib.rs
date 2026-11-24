@@ -28,7 +28,7 @@
 //! | Feature | Default | Meaning |
 //! |---|---|---|
 //! | `sim` | yes | in-memory `SimWorld` transport (NET-09) |
-//! | `native` | no | `NativeTransport` adapter for the Kotlin BLE shim (NET-14) |
+//! | `native` | no | `NativeTransport` (GATT, NET-14) and `L2capTransport` (CoC, NET-26) adapters for the Kotlin BLE shim |
 //! | `serde` | no | `Serialize` for [`Network::snapshot`] and the types in it (NET-23) |
 //!
 //! # Example
@@ -56,6 +56,8 @@ mod config;
 mod discovery;
 mod error;
 mod guard;
+#[cfg(feature = "native")]
+mod l2cap;
 mod link;
 mod metrics;
 #[cfg(feature = "native")]
@@ -70,8 +72,8 @@ mod transport;
 mod types;
 
 pub use codec::{
-    AppHello, BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags, CAP_CREDIT, FRAME_VERSION,
-    Fragmenter, Frame, Hello, MAX_APP_HELLO, MAX_MTU, MIN_MTU, Reassembler,
+    AppHello, BEACON_LEN, BEACON_VERSION, Beacon, BeaconFlags, CAP_CREDIT, CAP_L2CAP,
+    FRAME_VERSION, Fragmenter, Frame, Hello, MAX_APP_HELLO, MAX_MTU, MIN_MTU, Reassembler,
 };
 pub use config::NetworkConfig;
 pub use discovery::DiscoveryMode;
@@ -80,6 +82,11 @@ pub use error::{
     HandshakeFailure, NetError, SendError,
 };
 pub use guard::RateLimit;
+#[cfg(feature = "native")]
+pub use l2cap::{
+    DEFAULT_COC_PSM, L2capConfig, L2capError, L2capEvents, L2capHandle, L2capSink, L2capStage,
+    L2capStatus, L2capTransport,
+};
 pub use link::{Link, LinkAction, LinkEnd, LinkState};
 pub use metrics::LinkMetrics;
 #[cfg(feature = "native")]
@@ -96,4 +103,4 @@ pub use topology::LinkClass;
 pub use transport::{
     AdvProfile, PowerMode, RadioState, ScanProfile, Transport, TransportCaps, TransportEvent,
 };
-pub use types::{Channel, LinkHintPreference, LinkId, LinkRole, LocalTag, PeerKey};
+pub use types::{Channel, LinkHintPreference, LinkId, LinkRole, LinkTransport, LocalTag, PeerKey};

@@ -16,7 +16,9 @@ overflows and the link is lost. NET-04 reserved a `Credit` frame for this.
 
 `Hello.caps` bit 0 (`CAP_CREDIT`) offers credits. A link uses them only
 when both `Hello`s set it; otherwise nothing changes. `NetworkConfig`
-offers them by default (`with_flow_control`).
+offers them by default (`with_flow_control`). Bit 1 (`CAP_L2CAP`, NET-26)
+is independent: it names the radio channel and neither requires nor
+changes credit accounting.
 
 ### Frame
 

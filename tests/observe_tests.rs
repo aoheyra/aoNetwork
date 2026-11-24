@@ -236,7 +236,13 @@ fn strikes_and_blacklisting_are_counted() {
 
 #[cfg(feature = "serde")]
 fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+            use std::fmt::Write as _;
+            write!(out, "{byte:02x}").expect("writing to a String cannot fail");
+            out
+        })
 }
 
 /// Done when: the snapshot serializes cleanly, with every field under a

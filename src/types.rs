@@ -185,6 +185,21 @@ pub enum LinkRole {
     Responder,
 }
 
+/// The radio channel a link carries its frames on.
+///
+/// GATT uses one ATT value per fragment; an L2CAP CoC uses a larger
+/// connection-oriented packet. The link protocol above this seam is the
+/// same on both, so no frame layout changes (NET-26).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize))]
+#[non_exhaustive]
+pub enum LinkTransport {
+    /// GATT characteristics, one ATT value per fragment.
+    Gatt,
+    /// L2CAP connection-oriented channel, one packet per fragment.
+    L2capCoc,
+}
+
 /// The four scheduling channels every frame belongs to.
 ///
 /// Scheduling rules (strict priority, deficit round-robin weights) live in the

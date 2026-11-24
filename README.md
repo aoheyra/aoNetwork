@@ -2,7 +2,7 @@
 
 **The link layer of the aoheyra mesh.** A sans-IO Rust crate that turns a raw Bluetooth LE radio (or an in-memory simulator) into reliable, prioritised, abuse-resistant links between neighbouring phones.
 
-> **Status: v0.1.0.** Every issue from NET-01 to NET-25 is implemented, and the native contract and GATT layout (NET-03) are specified in [`docs/native-contract.md`](docs/native-contract.md). NET-26 (L2CAP CoC) is a spike that waits on measurements from phones; nothing in this README depends on it. See [Roadmap](#roadmap).
+> **Status: v0.1.0.** Every issue from NET-01 to NET-26 is implemented. The native contract and GATT layout (NET-03) are specified in [`docs/native-contract.md`](docs/native-contract.md); its section 10 adds the L2CAP CoC shim. GATT remains the default data channel. CoC is additive and negotiated in `Hello.caps`, but its promised phone throughput has not yet been measured on Android: see [NET-26](docs/adr/net-26-l2cap-coc.md). See [Roadmap](#roadmap).
 
 Cargo package name: `ao_network` (the repo name keeps its capitals; the package is snake_case).
 
@@ -29,7 +29,7 @@ aoNetwork knows about **radio peers and frames**. It does not know what a messag
 - Discovers neighbours through BLE advertising and scan-response **beacons** and decides who to connect to, through a bounded **peer table** that evicts the unseen after 30 s and backs off after a failed attempt.
 - Picks a **discovery mode** from its degree and battery: aggressive (low-latency scanning and advertising) below the stable target, normal (balanced) at it, and quiet (low power, scanning in 10 s windows with 50 s pauses) while the beacon says the battery is low or the app says the node is idle. A mode change is requested at most once per `discovery_interval` (10 s), well inside Android's limit on scan starts.
 - Runs a **link state machine** (`Connecting → Negotiating → Handshaking → Ready → Closing → Closed`) with an unauthenticated `Hello` exchange.
-- **Fragments and reassembles** frames over the BLE MTU (23 to 517).
+- **Fragments and reassembles** frames over a 23 to 517 byte packet: an ATT value over GATT, or an L2CAP CoC packet when both ends advertise `CAP_L2CAP` and their transports report CoC (NET-26).
 - Schedules traffic through a **four-channel send queue** with per-link byte caps, coalescing and expiry.
 - Applies **credit-based flow control** when both `Hello`s offer it (`CAP_CREDIT`, on by default): each receiver grants a window per channel and grants bytes back as it hands frames on, a frame waits until its channel has credit for all of it, and a peer that sends past what it was granted is a protocol violation. A receiver that stops reading stops its senders instead of filling its radio queue: what peers may have sent a node and it has not read is bounded by its receive windows, per link, and a bounded radio queue (`NativeConfig::max_pending_events`) sized to cover them at the link's MTU never overflows.
 - Enforces the **degree cap** (how many links a phone keeps): admission fills stable slots up to `max_stable` (the stable target plus one) and then the single explore slot, candidates are scored by signal and by the peer's degree so the best neighbour is dialled first, a node over its target sheds its weakest degraded link (below `min_rssi` and past a 10 s minimum age) while strong links are kept, inbound links meet the same slots and floor, and three rejected attempts in a row lower the session's cap. With no slot free the node stops advertising `accepting`, so nobody dials it into a full table.
@@ -39,7 +39,8 @@ aoNetwork knows about **radio peers and frames**. It does not know what a messag
 - Detects dead links (**keepalive**) and tracks per-link metrics (RSSI, RTT, bytes, drops).
 - Protects itself from hostile neighbours with **per-link rate limits, strikes and a temporary blacklist**. Every neighbour is treated as hostile: a peer that sends more frames or bytes than its link allows is disconnected with `AbuseDetected` and blacklisted, and malformed frames, broken chunk streams and oversize `Hello`s are strikes, three of which blacklist the peer too. A blacklisted peer is neither dialled nor accepted until its entry expires.
 - Is **observable**: each link logs its lifecycle through `tracing` under a `link{id peer role class}` span, and `Network::snapshot(now)` returns the discovery mode, every link with its metrics and queued bytes, and cumulative counters (links up, links down by reason, failed connects, queue drops, refused sends, strikes, blacklistings) for a debug screen.
-- Exposes a single sans-IO façade (`Network`) that the caller polls from its own async task, and a **native contract** (`NativeSink`) that the Kotlin BLE module implements.
+- Exposes a single sans-IO façade (`Network`) that the caller polls from its own async task, and a **native contract** (`NativeSink`, or `L2capSink` for CoC) that the Kotlin BLE module implements.
+- Offers **L2CAP CoC** as an optional second data channel (NET-26): same frames and link rules, no ATT header per chunk, negotiated with `CAP_L2CAP`, with bounded queues, one write credit per link and typed status mapping. `LinkInfo` and `LinkSnapshot` report which channel a link uses. GATT stays the default; a seeded GATT/CoC run cuts writes for a 64 KiB sync transfer from 277 to 149 and elapsed time from 276 ms to 148 ms, but real-phone measurements remain open.
 
 ## What it deliberately does not do
 
@@ -48,7 +49,7 @@ aoNetwork knows about **radio peers and frames**. It does not know what a messag
 | Node identity, keys, signatures, encryption, tag generation | `aoIdents` |
 | Packet headers, TTL, routing, store-and-forward, dedupe | `aoMesh` |
 | App payloads, persistence, UI, UniFFI/FFI | `aoheyra` |
-| Android BLE code (GATT, advertiser, scanner) | Kotlin `:ble` module in `aoheyra/android` |
+| Android BLE code (GATT, L2CAP CoC sockets, advertiser, scanner) | Kotlin `:ble` module in `aoheyra/android` |
 
 The rotating link tag is generated by aoIdents and passed down by aoMesh. aoNetwork carries it in `Hello` and uses it **only** for duplicate-link tie-breaking.
 
@@ -101,8 +102,13 @@ Hand-rolled, big-endian, version and type bytes plus canonical LEB128 lengths. *
 receiver's `max_frame` before allocating. The version-1 layout is recorded in
 [the NET-04 ADR](docs/adr/net-04-frame-wire-format.md), and the `Credit` body
 and flow-control rules in [the NET-25 ADR](docs/adr/net-25-credit-flow-control.md).
+`Hello.caps` bit 0 is `CAP_CREDIT`; bit 1 is `CAP_L2CAP` (NET-26). Unknown bits
+already round-trip, so adding the CoC bit needs no frame version bump.
 
-Fragmentation uses a 1-byte chunk header (START, END, 3-bit sequence). Payload per chunk is `MTU − 3 − 1`. One frame is in flight per link. `Fragmenter` and `Reassembler` implement it; the chunk rules are recorded in [the NET-05 ADR](docs/adr/net-05-chunk-format.md).
+Fragmentation uses a 1-byte chunk header (START, END, 3-bit sequence), unchanged
+across transports. Payload per chunk is `MTU − 3 − 1` over GATT and `MTU − 1`
+over CoC. One frame is in flight per link. `Fragmenter` and `Reassembler`
+implement it; the chunk rules are recorded in [the NET-05 ADR](docs/adr/net-05-chunk-format.md).
 
 Beacon (16 bytes, manufacturer data in the scan response): version, flags (accepting / relay-willing / low-battery), degree, max_links, 8-byte hint, 4-byte digest. Encoding and decoding live in Rust only; Kotlin passes raw bytes.
 
@@ -128,6 +134,7 @@ and scanning are separate work.
 | Strikes | 3 strikes blacklist a peer; blacklist and strike memory last 10 min |
 | `discovery_interval` | 10 s between scan or advertise mode changes |
 | Flow control | on; receive window per link Control 16, Message 48, Telemetry 16, Bulk 48 KiB, each at least `max_frame` |
+| L2CAP CoC | off by default; `L2capConfig` uses PSM `0x1001` and a 512-byte packet when enabled |
 
 These may change after the BLE spike (AND-02). Source of truth is `NetworkConfig`, not this table.
 
@@ -141,14 +148,14 @@ Heap requested at default config on a 64-bit target, measured by `tests/memory_b
 | A node: 5 links, a full blacklist and a full peer table | 1.5 MiB | 1.26 MiB |
 | `NativeTransport`: 1024 pending events of 514 B and 64 scan results | 640 KiB | 568 KiB |
 
-A link holds its send queue (the 128 KiB its channel caps charge, plus the spare slots of its ring buffers), the frame being written, already cut into chunks, and at most one partial frame of up to `max_frame`. The ceilings scale with `queue_cap`, `max_frame`, `max_links`, `max_peers` and `NativeConfig`. `cargo test` fails when a change exceeds one; a ceiling is raised here and in the test together, with the reason.
+`L2capTransport` uses the same event and scan bounds, with CoC packets up to 512 B instead of 514, so it stays inside the same ceiling. A link holds its send queue (the 128 KiB its channel caps charge, plus the spare slots of its ring buffers), the frame being written, already cut into chunks, and at most one partial frame of up to `max_frame`. The ceilings scale with `queue_cap`, `max_frame`, `max_links`, `max_peers` and `NativeConfig`/`L2capConfig`. `cargo test` fails when a change exceeds one; a ceiling is raised here and in the test together, with the reason.
 
 ## Features
 
 | Feature | Default | Meaning |
 |---|---|---|
 | `sim` | yes | In-memory `SimWorld` transport; use it as a `dev-dependency` from aoMesh and aoheyra. Seeded and driven by a paused clock (`SimWorld::advance`), so a run reproduces exactly |
-| `native` | no | `NativeTransport` adapter for the Kotlin BLE shim. No UniFFI dependency in this crate |
+| `native` | no | `NativeTransport` (GATT) and `L2capTransport` (CoC) adapters for the Kotlin BLE shim. No UniFFI dependency in this crate |
 | `serde` | no | `Serialize` for `Network::snapshot` and the types in it, for a diagnostics bundle. Never used for the wire format |
 
 ## API
@@ -184,7 +191,8 @@ a delivery acknowledgement: queued payloads are discarded if their link closes.
 radio `PeerKey`, never by an identity tag, and do not change `set_beacon` or the
 `Hello` tag. `links()` and `snapshot()` report `up_at`, the injected time each
 handshake finished, so a seeded simulator run can compare time-to-link with
-hints off and on.
+hints off and on. They also report `transport` (GATT or CoC) and
+`l2cap_negotiated`, which is true only when both `Hello`s offered `CAP_L2CAP`.
 
 `disconnect` closes a link through its state machine, sending `Bye` on a
 connected link or cancelling a connection attempt. An up link reports one
@@ -200,7 +208,7 @@ reason, and sends fail once closing begins. An in-flight frame finishes before
 - **One owner per concept.** Rate limiting here is per-link, protocol-blind (bytes and frames). Per-origin relay budgets belong to aoMesh.
 - **Coalescing and expiry** are mechanisms here (`coalesce_key`, `expires_at`). aoMesh chooses keys and lifetimes.
 - **aoMesh advises, aoNetwork enforces.** Link hints only order peers for dialing and can skip the initiation delay; slots, admission floors, eviction and `max_links` are enforced here. A hint cannot add a candidate, reserve a slot or bypass the cap.
-- **Kotlin never blocks the Rust runtime.** All `NativeSink` calls return immediately.
+- **Kotlin never blocks the Rust runtime.** All `NativeSink` and `L2capSink` calls return immediately.
 
 ## Development
 
@@ -224,6 +232,10 @@ cargo run --example sim_chat
 # The scenario suite on N seeded topologies instead of CI's fixed cases
 AO_SCENARIO_SEEDS=64 cargo test --release --test scenarios
 
+# The seeded GATT/CoC comparison behind NET-26
+cargo test --release --all-features --test l2cap_sim_tests \
+  l2cap_coc_delivers -- --nocapture
+
 # Fuzzing is centralised in aoheyra-fuzz; see its README for targets and commands
 # https://github.com/aoheyra/aoheyra-fuzz
 ```
@@ -245,7 +257,7 @@ aoNetwork has no sibling dependencies. Downstream crates consume it by git tag (
 | **M2 Two phones talk** | NET-08..14 | Transport trait, `SimWorld`, link state machine, send queue, façade, keepalive, `NativeTransport` |
 | **M3 Topology** | NET-15..20, 23 | Peer table, topology policy, duplicate-link resolution, abuse protection, discovery modes, scenario suite, observability |
 | **M4 Latest-wins** | NET-21, 22, 27 | Coalescing and expiry, opportunistic links, docs and `v0.1.0` |
-| **M6 Hardening** | NET-24..26 | Benchmarks and memory budget, credit-based flow control, L2CAP CoC spike |
+| **M6 Hardening** | NET-24..26 | Benchmarks and memory budget, credit-based flow control, L2CAP CoC transport and measured decision |
 
 Full scope and "Done when" lines for every issue are in the project backlog. Issue titles carry the ID, e.g. `[NET-04] Frame codec`.
 

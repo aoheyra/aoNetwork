@@ -140,6 +140,28 @@ fn timeout_is_measured_from_start_and_drops_the_frame() {
     assert_idle(&mut r, timeout * 3);
 }
 
+/// NET-26: a CoC packet has no ATT header, so a chunk fills its MTU.
+/// The chunk header and sequence stay on the wire unchanged.
+#[test]
+fn coc_fragmentation_uses_the_whole_packet() {
+    let frame = vec![0x5A; 492];
+    let gatt: Vec<Vec<u8>> = Fragmenter::new(&frame, 247).unwrap().collect();
+    let coc: Vec<Vec<u8>> = Fragmenter::with_overhead(&frame, 247, 1).unwrap().collect();
+    assert_eq!(gatt[0].len(), 244);
+    assert_eq!(coc[0].len(), 247);
+    assert!(coc.len() < gatt.len());
+
+    let config = NetworkConfig::default();
+    for chunks in [gatt, coc] {
+        let mut reassembler = Reassembler::new(&config);
+        let mut out = None;
+        for chunk in &chunks {
+            out = reassembler.push(T0, chunk).unwrap();
+        }
+        assert_eq!(out, Some(frame.clone()));
+    }
+}
+
 #[test]
 fn deadline_runs_from_the_first_chunk_of_a_partial_frame() {
     let config = NetworkConfig::default();

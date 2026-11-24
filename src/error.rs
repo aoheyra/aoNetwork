@@ -332,8 +332,8 @@ pub enum ConnectError {
     /// Connected, but service discovery or subscription failed.
     #[error("link setup failed")]
     SetupFailed,
-    /// The peer does not offer the aoheyra GATT service.
-    #[error("peer lacks the aoheyra service")]
+    /// The peer offers neither the aoheyra GATT service nor the CoC PSM.
+    #[error("peer lacks the aoheyra service or PSM")]
     ServiceMissing,
     /// The radio has no address for the peer (not seen in a scan).
     #[error("peer unknown to the radio")]

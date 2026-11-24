@@ -2,7 +2,9 @@
 //! truncation, oversize and trailing-byte properties live in
 //! `frame_properties.rs`.
 
-use ao_network::{AppHello, Channel, Frame, FrameError, Hello, LocalTag, MAX_APP_HELLO};
+use ao_network::{
+    AppHello, CAP_CREDIT, CAP_L2CAP, Channel, Frame, FrameError, Hello, LocalTag, MAX_APP_HELLO,
+};
 
 const MAX: usize = 16 * 1024;
 
@@ -28,6 +30,25 @@ fn hello_matches_the_wire_fixture() {
     });
     assert_eq!(frame.encode(), HELLO_WIRE);
     assert_eq!(Frame::decode(&HELLO_WIRE, MAX), Ok(frame));
+}
+
+/// NET-26: CoC gets its own caps bit. Unknown bits (including the upper
+/// half of the fixture's caps) already round-trip, so no frame version
+/// change is needed.
+#[test]
+fn capability_bits_are_independent() {
+    assert_eq!(CAP_CREDIT, 1);
+    assert_eq!(CAP_L2CAP, 2);
+    assert_eq!(CAP_CREDIT & CAP_L2CAP, 0);
+    let frame = Frame::Hello(Hello {
+        proto_min: 1,
+        proto_max: 1,
+        caps: CAP_CREDIT | CAP_L2CAP | 0x8000_0000,
+        max_frame: 1024,
+        tag: LocalTag::new([0; 16]),
+        app_hello: AppHello::new(Vec::new()).unwrap(),
+    });
+    assert_eq!(Frame::decode(&frame.encode(), MAX), Ok(frame));
 }
 
 #[test]

@@ -30,6 +30,12 @@ pub const MAX_APP_HELLO: usize = 256;
 /// control. A link uses credits only when both `Hello`s set it.
 pub const CAP_CREDIT: u32 = 1;
 
+/// [`Hello::caps`] bit: the sender's transport carries frames over an
+/// L2CAP connection-oriented channel (NET-26). A link is CoC only when
+/// both `Hello`s set it and the local transport is one; otherwise GATT
+/// remains the data channel.
+pub const CAP_L2CAP: u32 = 1 << 1;
+
 const TYPE_HELLO: u8 = 0x01;
 const TYPE_DATA: u8 = 0x02;
 const TYPE_PING: u8 = 0x03;

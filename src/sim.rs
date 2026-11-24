@@ -16,8 +16,8 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use crate::{
-    AdvProfile, BEACON_LEN, ConnectError, DisconnectReason, LinkId, LinkRole, MAX_MTU, MIN_MTU,
-    PeerKey, RadioState, ScanProfile, Transport, TransportCaps, TransportEvent,
+    AdvProfile, BEACON_LEN, ConnectError, DisconnectReason, LinkId, LinkRole, LinkTransport,
+    MAX_MTU, MIN_MTU, PeerKey, RadioState, ScanProfile, Transport, TransportCaps, TransportEvent,
 };
 
 /// Signal strength a node reports for every in-range peer by default;
@@ -29,7 +29,8 @@ pub const SIM_RSSI: i16 = -60;
 /// backoff gated resume without waiting for the beacon to change.
 const SCAN_REFRESH: Duration = Duration::from_secs(1);
 
-/// ATT header bytes; a chunk may use the rest of the MTU.
+/// ATT header bytes; a GATT chunk may use the rest of the MTU.
+/// L2CAP CoC packets have no ATT header (NET-26).
 const ATT_HEADER: usize = 3;
 
 /// World-wide timing and the seed.
@@ -73,6 +74,11 @@ pub struct SimNode {
     /// fit is dropped and its link closed with `TransportLost`, as a
     /// phone's overflowing receive queue would.
     pub rx_buffer: Option<usize>,
+    /// Carries link data over an L2CAP CoC instead of GATT (NET-26).
+    /// Discovery still uses advertising.
+    pub l2cap: bool,
+    /// CoC packet size used when both ends set `l2cap`, 23..=517.
+    pub coc_mtu: u16,
 }
 
 impl Default for SimNode {
@@ -83,6 +89,8 @@ impl Default for SimNode {
             can_advertise: true,
             rssi: SIM_RSSI,
             rx_buffer: None,
+            l2cap: false,
+            coc_mtu: 512,
         }
     }
 }
@@ -105,6 +113,12 @@ pub enum SimError {
     /// The MTU is outside the range a BLE stack may negotiate.
     #[error("unsupported ATT MTU: {mtu}")]
     InvalidMtu {
+        /// The rejected MTU.
+        mtu: u16,
+    },
+    /// The CoC MTU is outside the range the link layer can fragment for.
+    #[error("unsupported CoC MTU: {mtu}")]
+    InvalidCocMtu {
         /// The rejected MTU.
         mtu: u16,
     },
@@ -170,6 +184,9 @@ impl SimWorld {
         if !(MIN_MTU..=MAX_MTU).contains(&node.mtu) {
             return Err(SimError::InvalidMtu { mtu: node.mtu });
         }
+        if !(MIN_MTU..=MAX_MTU).contains(&node.coc_mtu) {
+            return Err(SimError::InvalidCocMtu { mtu: node.coc_mtu });
+        }
         let id = with_world(&self.world, |w| w.add_node(node));
         Ok(SimTransport {
             world: Arc::clone(&self.world),
@@ -232,8 +249,17 @@ impl Transport for SimTransport {
         let node = with_world(&self.world, |w| w.nodes[self.node.0].config);
         TransportCaps {
             can_advertise: node.can_advertise,
-            max_mtu: node.mtu,
+            max_mtu: if node.l2cap { node.coc_mtu } else { node.mtu },
             max_links: node.max_links,
+        }
+    }
+
+    fn link_transport(&self) -> LinkTransport {
+        let node = with_world(&self.world, |w| w.nodes[self.node.0].config);
+        if node.l2cap {
+            LinkTransport::L2capCoc
+        } else {
+            LinkTransport::Gatt
         }
     }
 
@@ -365,6 +391,8 @@ enum LinkState {
     Up {
         remote: LinkId,
         mtu: u16,
+        /// CoC packets lose only the chunk header to ATT.
+        coc: bool,
         can_write: bool,
     },
 }
@@ -609,8 +637,16 @@ impl World {
         let reachable = self.in_range(node, target)
             && target_state.started
             && target_state.advertising.is_some();
-        let mtu = self.nodes[node.0].config.mtu.min(target_state.config.mtu);
-        let error = if !reachable {
+        let local = &self.nodes[node.0].config;
+        let coc = local.l2cap && target_state.config.l2cap;
+        let mtu = if coc {
+            local.coc_mtu.min(target_state.config.coc_mtu)
+        } else {
+            local.mtu.min(target_state.config.mtu)
+        };
+        let error = if !reachable || local.l2cap != target_state.config.l2cap {
+            // A CoC endpoint cannot reach a GATT-only one: they listen on
+            // different Android sockets (NET-26).
             Some(ConnectError::Unreachable)
         } else if self.up_links(node) >= self.cap(node) || self.up_links(target) >= self.cap(target)
         {
@@ -628,6 +664,7 @@ impl World {
         let up = |remote| LinkState::Up {
             remote,
             mtu,
+            coc,
             can_write: true,
         };
         self.nodes[node.0].links.insert(
@@ -736,6 +773,7 @@ impl World {
                 LinkState::Up {
                     remote,
                     mtu,
+                    coc,
                     can_write,
                 },
         }) = self.nodes[node.0].links.get_mut(&link)
@@ -743,8 +781,10 @@ impl World {
             return; // Unknown, ended or still connecting: ignored.
         };
         debug_assert!(*can_write, "write without a write credit on {link:?}");
+        // A CoC packet is the MTU; ATT steals three bytes from it.
+        let overhead = if *coc { 0 } else { ATT_HEADER };
         debug_assert!(
-            chunk.len() <= usize::from(*mtu) - ATT_HEADER,
+            chunk.len() <= usize::from(*mtu) - overhead,
             "chunk of {} bytes exceeds mtu {mtu}",
             chunk.len()
         );
